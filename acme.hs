@@ -31,6 +31,9 @@ import           Options.Applicative        hiding (header)
 import qualified Options.Applicative        as Opt
 import           System.Directory
 import           System.Process             (readProcess)
+import OpenSSL.EVP.Sign
+import OpenSSL.EVP.Digest
+import OpenSSL
 
 directoryUrl :: String
 directoryUrl =  "https://acme-v01.api.letsencrypt.org/directory"
@@ -64,8 +67,8 @@ go :: CmdOpts -> IO ()
 go (CmdOpts privKeyFile domain email termOverride) = do
   let terms = fromMaybe defaultTerms termOverride
   doesFileExist privKeyFile >>= flip unless (genKey privKeyFile)
-  userKey_ <- readFile privKeyFile >>= flip readPrivateKey PwTTY
-  pub <- maybe (return Nothing) (rsaCopyPublic >=> return . Just) (toKeyPair userKey_ :: Maybe RSAKeyPair)
+  priv <- readFile privKeyFile >>= flip readPrivateKey PwTTY
+  pub <- maybe (return Nothing) (rsaCopyPublic >=> return . Just) (toKeyPair priv :: Maybe RSAKeyPair)
   case pub of
     Nothing -> error "Error: failed to parse RSA key."
     Just (userKey :: RSAPubKey) -> do
@@ -75,10 +78,10 @@ go (CmdOpts privKeyFile domain email termOverride) = do
       let protected = b64 (header userKey nonce_)
 
       -- Create user account
-      forM_ email $ \m -> signPayload "registration" privKeyFile userKey protected (registration m terms)
+      forM_ email $ \m -> signPayload "registration" priv privKeyFile userKey protected (registration m terms)
 
       -- Obtain a challenge
-      signPayload "challenge-request" privKeyFile userKey protected (authz domain)
+      signPayload "challenge-request" priv privKeyFile userKey protected (authz domain)
 
       -- Answser the challenge
       let thumb = thumbprint (JWK (rsaE userKey) "RSA" (rsaN userKey))
@@ -91,13 +94,13 @@ go (CmdOpts privKeyFile domain email termOverride) = do
       putStrLn ("With content:\n" ++ BC.unpack thumbtoken)
 
       -- Notify Let's Encrypt we answsered the challenge
-      signPayload "challenge-response" privKeyFile userKey protected (challenge thumbtoken)
+      signPayload "challenge-response" priv privKeyFile userKey protected (challenge thumbtoken)
 
       -- Wait for challenge validation
 
       -- Send a CSR and get a certificate
       csr_ <- B.readFile (domain ++ ".csr.der")
-      signPayload "csr-request" privKeyFile userKey protected (csr csr_)
+      signPayload "csr-request" priv privKeyFile userKey protected (csr csr_)
 
 data Directory = Directory {
   _newCert    :: String,
@@ -119,11 +122,14 @@ getNonce = fmap _nonce <$> getDirectory directoryUrl
 
 --------------------------------------------------------------------------------
 -- | Sign and write a payload to a file with a nonce-protected header.
-signPayload :: RSAKey k => String -> String -> k -> ByteString -> ByteString -> IO ()
-signPayload name privKeyFile key protected payload = do
+signPayload :: (RSAKey k, KeyPair kp) => String -> kp -> String -> k -> ByteString -> ByteString -> IO ()
+signPayload name priv privKeyFile key protected payload = withOpenSSL $ do
   writePayload name protected payload
-  sig <- sign privKeyFile name
+  sig <- Main.sign privKeyFile name
+  Just dig <- getDigestByName "SHA256"
+  sig' <- signBS dig priv (B.concat [protected, ".", payload])
   writeBody name key protected payload sig
+  writeBody (name ++ ".internal") key protected payload (b64 sig')
 
 -- | Write a payload to file with a nonce-protected header.
 writePayload :: String -> ByteString -> ByteString -> IO ()
