@@ -21,22 +21,10 @@ import OpenSSL.EVP.PKey
 import OpenSSL.PEM (readPublicKey)
 import OpenSSL.RSA
 import System.Process (readProcess)
+import Network.Wreq hiding (header)
+import Control.Lens hiding ((.=))
 
 
---------------------------------------------------------------------------------
-email :: String
-email = "noteed@gmail.com"
-
-domain :: String
-domain = "aaa.reesd.com"
-
-nonce_ :: String
-nonce_ = "ckYlMQ7BflfUb7HmxipdSpnkFle83-8lUkn50U-X97Q"
-
-terms :: String
-terms = "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
-
---------------------------------------------------------------------------------
 main :: IO ()
 main = do
   userKey_ <- readFile "user.pub" >>= readPublicKey
@@ -46,7 +34,7 @@ main = do
       let protected = b64 (header userKey nonce_)
 
       -- Create user account
-      signPayload "registration" userKey protected (registration email)
+      signPayload "registration" userKey protected (registration email terms)
 
       -- Obtain a challenge
       signPayload "challenge-request" userKey protected (authz domain)
@@ -70,6 +58,18 @@ main = do
       csr_ <- B.readFile (domain ++ ".csr.der")
       signPayload "csr-request" userKey protected (csr csr_)
 
+  where
+    email :: String
+    email = "noteed@gmail.com"
+
+    domain :: String
+    domain = "aaa.reesd.com"
+
+    nonce_ :: String
+    nonce_ = "ckYlMQ7BflfUb7HmxipdSpnkFle83-8lUkn50U-X97Q"
+
+    terms :: String
+    terms = "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
 
 --------------------------------------------------------------------------------
 -- | Sign and write a payload to a file with a nonce-protected header.
@@ -127,8 +127,8 @@ header key nonce = (toStrict . encode)
   (Header "RS256" (JWK (rsaE key) "RSA" (rsaN key)) (Just nonce))
 
 -- | Registration payload to sign with user key.
-registration :: String -> ByteString
-registration emailAddr = (b64 . toStrict . encode) (Reg emailAddr terms)
+registration :: String -> String -> ByteString
+registration emailAddr terms = (b64 . toStrict . encode) (Reg emailAddr terms)
 
 -- | Challenge request payload to sign with user key.
 authz :: String -> ByteString
