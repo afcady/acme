@@ -19,22 +19,48 @@ import Data.Digest.Pure.SHA (bytestringDigest, sha256)
 import Data.Text.Encoding (decodeUtf8)
 import qualified Data.Text as T
 import OpenSSL.EVP.PKey
-import OpenSSL.PEM (readPublicKey)
+import OpenSSL.PEM
 import OpenSSL.RSA
 import System.Process (readProcess)
 import Network.Wreq hiding (header)
 import Control.Lens hiding ((.=))
 import Data.Aeson.Lens hiding (key)
 import qualified Data.Aeson.Lens as JSON
+import Options.Applicative hiding (header)
+import qualified Options.Applicative as Opt
+import Data.Maybe
 
 directoryUrl :: String
 directoryUrl =  "https://acme-v01.api.letsencrypt.org/directory"
 
 main :: IO ()
-main = do
-  userKey_ <- readFile "user.pub" >>= readPublicKey
-  case toPublicKey userKey_ of
-    Nothing -> error "Not a public RSA key."
+main = execParser opts >>= go
+  where
+    opts = info (helper <*> cmdopts) (fullDesc <> progDesc detailedDescription <> Opt.header "Let's Encrypt! ACME client")
+    detailedDescription = "This is a work in progress."
+
+data CmdOpts = CmdOpts {
+      optKeyFile :: String,
+      optDomain :: String,
+      optEmail :: String,
+      optTerms :: Maybe String
+}
+
+defaultTerms :: String
+defaultTerms = "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
+
+cmdopts :: Parser CmdOpts
+cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <> help "filename of your private RSA key")
+                  <*> strOption (long "domain" <> metavar "DOMAIN" <> help "the domain name to certify")
+                  <*> strOption (long "email" <> metavar "ADDRESS" <> help "an email address with which to register an account")
+                  <*> optional (strOption (long "terms" <> metavar "URL" <> help "the terms param of the registration request"))
+
+go :: CmdOpts -> IO ()
+go (CmdOpts privKeyFile domain email termOverride) = do
+  let terms = fromMaybe defaultTerms termOverride
+  userKey_ <- readFile privKeyFile >>= flip readPrivateKey PwTTY
+  case toPublicKey $ fromPublicKey userKey_ of
+    Nothing -> error "Error: failed to parse RSA key."
     Just (userKey :: RSAPubKey) -> do
 
       Just nonce_ <- getNonce
@@ -42,10 +68,10 @@ main = do
       let protected = b64 (header userKey nonce_)
 
       -- Create user account
-      signPayload "registration" userKey protected (registration email terms)
+      signPayload "registration" privKeyFile userKey protected (registration email terms)
 
       -- Obtain a challenge
-      signPayload "challenge-request" userKey protected (authz domain)
+      signPayload "challenge-request" privKeyFile userKey protected (authz domain)
 
       -- Answser the challenge
       let thumb = thumbprint (JWK (rsaE userKey) "RSA" (rsaN userKey))
@@ -58,23 +84,13 @@ main = do
       putStrLn ("With content:\n" ++ BC.unpack thumbtoken)
 
       -- Notify Let's Encrypt we answsered the challenge
-      signPayload "challenge-response" userKey protected (challenge thumbtoken)
+      signPayload "challenge-response" privKeyFile userKey protected (challenge thumbtoken)
 
       -- Wait for challenge validation
 
       -- Send a CSR and get a certificate
       csr_ <- B.readFile (domain ++ ".csr.der")
-      signPayload "csr-request" userKey protected (csr csr_)
-
-  where
-    email :: String
-    email = "noteed@gmail.com"
-
-    domain :: String
-    domain = "aaa.reesd.com"
-
-    terms :: String
-    terms = "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
+      signPayload "csr-request" privKeyFile userKey protected (csr csr_)
 
 data Directory = Directory {
   _newCert :: String,
@@ -96,10 +112,10 @@ getNonce = fmap _nonce <$> getDirectory directoryUrl
 
 --------------------------------------------------------------------------------
 -- | Sign and write a payload to a file with a nonce-protected header.
-signPayload :: RSAKey k => String -> k -> ByteString -> ByteString -> IO ()
-signPayload name key protected payload = do
+signPayload :: RSAKey k => String -> String -> k -> ByteString -> ByteString -> IO ()
+signPayload name privKeyFile key protected payload = do
   writePayload name protected payload
-  sig <- sign name
+  sig <- sign privKeyFile name
   writeBody name key protected payload sig
 
 -- | Write a payload to file with a nonce-protected header.
@@ -108,17 +124,17 @@ writePayload name protected payload =
   LB.writeFile (name ++ ".txt") (LB.fromChunks [protected, ".", payload])
 
 -- | Sign a payload file using the user key.
-sign :: String -> IO ByteString
-sign name = do
-  sign_ (name ++ ".txt") (name ++ ".sig")
+sign :: String -> String -> IO ByteString
+sign privKeyFile name = do
+  sign_ privKeyFile (name ++ ".txt") (name ++ ".sig")
   sig_ <- B.readFile (name ++ ".sig")
   return (b64 sig_)
 
-sign_ :: String -> String -> IO ()
-sign_ inp out = do
+sign_ :: String -> String -> String -> IO ()
+sign_ privKeyFile inp out = do
   _ <- readProcess "openssl"
     [ "dgst", "-sha256"
-    , "-sign", "user.key"
+    , "-sign", privKeyFile
     , "-out", out
     , inp
     ]
