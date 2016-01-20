@@ -65,42 +65,43 @@ genKey privKeyFile = readProcess "openssl" (words "genrsa 4096 -out" ++ [privKey
 
 go :: CmdOpts -> IO ()
 go (CmdOpts privKeyFile domain email termOverride) = do
-  let terms = fromMaybe defaultTerms termOverride
+
   doesFileExist privKeyFile >>= flip unless (genKey privKeyFile)
+
   priv <- readFile privKeyFile >>= flip readPrivateKey PwTTY
-  pub <- maybe (return Nothing) (rsaCopyPublic >=> return . Just) (toKeyPair priv :: Maybe RSAKeyPair)
-  case pub of
-    Nothing -> error "Error: failed to parse RSA key."
-    Just (userKey :: RSAPubKey) -> do
+  mbPub <- maybe (return Nothing) (rsaCopyPublic >=> return . Just)
+             (toKeyPair priv :: Maybe RSAKeyPair)
 
-      Just nonce_ <- getNonce
+  let terms = fromMaybe defaultTerms termOverride
+      pub :: RSAPubKey
+      pub = fromMaybe (error "Error: failed to parse RSA key.") mbPub
 
-      let protected = b64 (header userKey nonce_)
+  Just nonce_ <- getNonce
 
-      -- Create user account
-      forM_ email $ \m -> signPayload "registration" priv userKey protected (registration m terms)
+  -- Create user account
+  forM_ email $ \m ->
+    LB.writeFile "registration.body" =<< signPayload priv pub nonce_ (registration m terms)
 
-      -- Obtain a challenge
-      signPayload "challenge-request" priv userKey protected (authz domain)
+  -- Obtain a challenge
+  LB.writeFile "challenge-request.body" =<< signPayload priv pub nonce_ (authz domain)
 
-      -- Answser the challenge
-      let thumb = thumbprint (JWK (rsaE userKey) "RSA" (rsaN userKey))
-          -- Extracted from POST response above.
-          token = "DjyJpI3HVWAmsAwMT5ZFpW8dj19cel6ml6qaBUeGpCg"
-          thumbtoken = toStrict (LB.fromChunks [token, ".", thumb])
+  -- Answser the challenge
+  let thumb = thumbprint (JWK (rsaE pub) "RSA" (rsaN pub))
+      -- Extracted from POST response above.
+      token = "DjyJpI3HVWAmsAwMT5ZFpW8dj19cel6ml6qaBUeGpCg"
+      thumbtoken = toStrict (LB.fromChunks [token, ".", thumb])
 
-      putStrLn ("Serve http://" ++ domain ++ "/.well-known/acme-challenge/" ++
-        BC.unpack token)
-      putStrLn ("With content:\n" ++ BC.unpack thumbtoken)
+  putStrLn ("Serve http://" ++ domain ++ "/.well-known/acme-challenge/" ++ BC.unpack token)
+  putStrLn ("With content:\n" ++ BC.unpack thumbtoken)
 
-      -- Notify Let's Encrypt we answsered the challenge
-      signPayload "challenge-response" priv userKey protected (challenge thumbtoken)
+  -- Notify Let's Encrypt we answsered the challenge
+  LB.writeFile "challenge-response.body" =<< signPayload priv pub nonce_ (challenge thumbtoken)
 
-      -- Wait for challenge validation
+  -- Wait for challenge validation Send a CSR and get a certificate
+  csr_ <- B.readFile (domain ++ ".csr.der")
+  LB.writeFile "csr-request.body" =<< signPayload priv pub nonce_ (csr csr_)
 
-      -- Send a CSR and get a certificate
-      csr_ <- B.readFile (domain ++ ".csr.der")
-      signPayload "csr-request" priv userKey protected (csr csr_)
+  return ()
 
 data Directory = Directory {
   _newCert    :: String,
@@ -122,16 +123,12 @@ getNonce = fmap _nonce <$> getDirectory directoryUrl
 
 --------------------------------------------------------------------------------
 -- | Sign and write a payload to a file with a nonce-protected header.
-signPayload :: (RSAKey k, KeyPair kp) => String -> kp -> k -> ByteString -> ByteString -> IO ()
-signPayload name priv key protected payload = withOpenSSL $ do
+signPayload :: (RSAKey k, KeyPair kp) => kp -> k -> String -> ByteString -> IO LC.ByteString
+signPayload priv pub nonce_ payload = withOpenSSL $ do
+  let protected = b64 (header pub nonce_)
   Just dig <- getDigestByName "SHA256"
-  sig <- signBS dig priv (B.concat [protected, ".", payload])
-  writeBody name key protected payload sig
-
--- | Write a signed payload to a file. It can be used as the body of a POST
--- request.
-writeBody :: RSAKey k => String -> k -> ByteString -> ByteString -> ByteString -> IO ()
-writeBody name key protected payload sig = LB.writeFile (name ++ ".body") $ buildBody key protected payload sig
+  sig <- b64 <$> signBS dig priv (B.concat [protected, ".", payload])
+  return $ buildBody pub protected payload sig
 
 buildBody :: RSAKey k => k -> ByteString -> ByteString -> ByteString -> LC.ByteString
 buildBody key protected payload sig = encode (Request (header' key) protected payload sig)
