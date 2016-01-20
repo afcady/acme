@@ -1,0 +1,39 @@
+name:                acme-encrypt
+version:             0.1.0.0
+synopsis:            Get a certificate using Let's Encrypt ACME protocol
+description:         Please see README.md
+homepage:            https://github.com/noteed/acme
+author:              Vo Minh Thu
+maintainer:          noteed@gmail.com
+copyright:           2016 Vo Minh Thu
+category:            Web
+build-type:          Simple
+-- extra-source-files:
+cabal-version:       >=1.10
+
+-- library
+--   hs-source-dirs:      src
+--   exposed-modules:     Lib
+--   build-depends:       base >= 4.7 && < 5
+--   default-language:    Haskell2010
+
+executable acme-encrypt-exe
+  -- hs-source-dirs:      app
+  main-is:             acme.hs
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  build-depends:       base, cryptonite, aeson, bytestring, base64-bytestring, SHA, text, HsOpenSSL, process
+                     -- , acme-encrypt
+  default-language:    Haskell2010
+
+-- test-suite acme-encrypt-test
+--   type:                exitcode-stdio-1.0
+--   hs-source-dirs:      test
+--   main-is:             Spec.hs
+--   build-depends:       base
+--                      , acme-encrypt
+--   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+--   default-language:    Haskell2010
+
+-- source-repository head
+--   type:     git
+--   location: https://github.com/githubuser/acme-encrypt
