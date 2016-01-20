@@ -73,21 +73,25 @@ main = do
 
 --------------------------------------------------------------------------------
 -- | Sign and write a payload to a file with a nonce-protected header.
+signPayload :: RSAKey k => String -> k -> ByteString -> ByteString -> IO ()
 signPayload name key protected payload = do
   writePayload name protected payload
   sig <- sign name
   writeBody name key protected payload sig
 
 -- | Write a payload to file with a nonce-protected header.
+writePayload :: String -> ByteString -> ByteString -> IO ()
 writePayload name protected payload =
   LB.writeFile (name ++ ".txt") (LB.fromChunks [protected, ".", payload])
 
 -- | Sign a payload file using the user key.
+sign :: String -> IO ByteString
 sign name = do
   sign_ (name ++ ".txt") (name ++ ".sig")
   sig_ <- B.readFile (name ++ ".sig")
   return (b64 sig_)
 
+sign_ :: String -> String -> IO ()
 sign_ inp out = do
   _ <- readProcess "openssl"
     [ "dgst", "-sha256"
@@ -100,37 +104,49 @@ sign_ inp out = do
 
 -- | Write a signed payload to a file. It can be used as the body of a POST
 -- request.
+writeBody :: RSAKey k => String -> k -> ByteString -> ByteString -> ByteString -> IO ()
 writeBody name key protected payload sig = LB.writeFile (name ++ ".body")
   (encode (Request (header' key) protected payload sig))
 
 --------------------------------------------------------------------------------
 -- | Base64URL encoding of Integer with padding '=' removed.
+b64i :: Integer -> ByteString
 b64i = b64 . i2osp
 
+b64 :: ByteString -> ByteString
 b64 = B.takeWhile (/= 61) . Base64.encode
 
+toStrict :: LB.ByteString -> ByteString
 toStrict = B.concat . LB.toChunks
 
+header' :: RSAKey k => k -> Header
 header' key = Header "RS256" (JWK (rsaE key) "RSA" (rsaN key)) Nothing
 
+header :: RSAKey k => k -> String -> ByteString
 header key nonce = (toStrict . encode)
   (Header "RS256" (JWK (rsaE key) "RSA" (rsaN key)) (Just nonce))
 
 -- | Registration payload to sign with user key.
-registration email = (b64 . toStrict . encode) (Reg email terms)
+registration :: String -> ByteString
+registration emailAddr = (b64 . toStrict . encode) (Reg emailAddr terms)
 
 -- | Challenge request payload to sign with user key.
+authz :: String -> ByteString
 authz = b64. toStrict . encode . Authz
 
 -- | Challenge response payload to sign with user key.
+challenge :: ByteString -> ByteString
 challenge = b64 . toStrict . encode . Challenge . BC.unpack
 
 -- | CSR request payload to sign with user key.
+csr :: ByteString -> ByteString
 csr = b64 . toStrict . encode . CSR . b64
 
+thumbprint :: JWK -> ByteString
 thumbprint = b64 . toStrict .bytestringDigest . sha256 . encodeOrdered
 
 -- | There is an `encodePretty'` in `aeson-pretty`, but do it by hand here.
+encodeOrdered :: JWK -> LB.ByteString
 encodeOrdered JWK{..} = LC.pack $
   "{\"e\":\"" ++ hE' ++ "\",\"kty\":\"" ++ hKty ++ "\",\"n\":\"" ++ hN' ++ "\"}"
   where
