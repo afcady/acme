@@ -24,7 +24,11 @@ import OpenSSL.RSA
 import System.Process (readProcess)
 import Network.Wreq hiding (header)
 import Control.Lens hiding ((.=))
+import Data.Aeson.Lens hiding (key)
+import qualified Data.Aeson.Lens as JSON
 
+directoryUrl :: String
+directoryUrl =  "https://acme-v01.api.letsencrypt.org/directory"
 
 main :: IO ()
 main = do
@@ -33,7 +37,7 @@ main = do
     Nothing -> error "Not a public RSA key."
     Just (userKey :: RSAPubKey) -> do
 
-      nonce_ <- view (responseHeader "Replay-Nonce" . to (T.unpack . decodeUtf8)) <$> get "https://acme-v01.api.letsencrypt.org/directory"
+      Just nonce_ <- getNonce
 
       let protected = b64 (header userKey nonce_)
 
@@ -71,6 +75,24 @@ main = do
 
     terms :: String
     terms = "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
+
+data Directory = Directory {
+  _newCert :: String,
+  _newAuthz :: String,
+  _revokeCert :: String,
+  _newReg :: String,
+  _nonce :: String
+}
+
+getDirectory :: String -> IO (Maybe Directory)
+getDirectory url = do
+  r <- get url
+  let nonce = r ^? responseHeader "Replay-Nonce" . to (T.unpack . decodeUtf8)
+      k x   = r ^? responseBody . JSON.key x . _String . to T.unpack
+  return $ Directory <$> k "new-cert" <*> k "new-authz" <*> k "revoke-cert" <*> k "new-reg" <*> nonce
+
+getNonce :: IO (Maybe String)
+getNonce = fmap _nonce <$> getDirectory directoryUrl
 
 --------------------------------------------------------------------------------
 -- | Sign and write a payload to a file with a nonce-protected header.
