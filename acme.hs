@@ -23,7 +23,7 @@ import qualified Data.ByteString.Lazy.Char8 as LC
 import           Data.Digest.Pure.SHA       (bytestringDigest, sha256)
 import           Data.Maybe
 import qualified Data.Text                  as T
-import           Data.Text.Encoding         (decodeUtf8)
+import           Data.Text.Encoding         (decodeUtf8, encodeUtf8)
 import           Network.Wreq               (Response, responseHeader, responseBody, responseStatus, statusCode, statusMessage, defaults, checkStatus)
 import qualified Network.Wreq.Session       as WS
 import           OpenSSL
@@ -38,6 +38,8 @@ import           System.Directory
 import           System.Process             (readProcess)
 import Control.Monad.RWS.Strict
 import Data.Coerce
+import Control.Concurrent (threadDelay)
+import System.Exit
 
 directoryUrl :: String
 directoryUrl =  "https://acme-v01.api.letsencrypt.org/directory"
@@ -51,6 +53,7 @@ main = execParser opts >>= go
 data CmdOpts = CmdOpts {
       optKeyFile :: String,
       optDomain  :: String,
+      optChallengeDir :: String,
       optEmail   :: Maybe String,
       optTerms   :: Maybe String
 }
@@ -61,11 +64,17 @@ defaultTerms = "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
 cmdopts :: Parser CmdOpts
 cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <> help "filename of your private RSA key")
                   <*> strOption (long "domain" <> metavar "DOMAIN" <> help "the domain name to certify")
+                  <*> strOption (long "dir" <> metavar "DIR" <> help "output directory for ACME challenges")
                   <*> optional (strOption (long "email" <> metavar "ADDRESS" <> help "an email address with which to register an account"))
                   <*> optional (strOption (long "terms" <> metavar "URL" <> help "the terms param of the registration request"))
 
 genKey :: String -> IO ()
-genKey privKeyFile = readProcess "openssl" (words "genrsa 4096 -out" ++ [privKeyFile]) "" >>= writeFile privKeyFile
+genKey privKeyFile = void $ readProcess "openssl" (words "genrsa -out" ++ [privKeyFile, "4096"]) ""
+
+genReq :: String -> String -> String -> IO ()
+genReq privKeyFile domain out = void $ readProcess "openssl" (args privKeyFile domain out) ""
+  where
+    args k d o = words "req -new -sha256 -outform DER -key" ++ [k, "-subj", "/CN=" ++ d, "-out", o]
 
 data Keys = Keys SomeKeyPair RSAPubKey
 readKeys :: String -> IO Keys
@@ -75,37 +84,77 @@ readKeys privKeyFile = do
   return $ Keys priv pub
 
 go :: CmdOpts -> IO ()
-go (CmdOpts privKeyFile domain email termOverride) = do
-  doesFileExist privKeyFile >>= flip unless (genKey privKeyFile)
-  keys@(Keys _ pub) <- readKeys privKeyFile
+go (CmdOpts privKeyFile domain challengeDir email termOverride) = do
 
+  doesFileExist privKeyFile >>= flip unless (genKey privKeyFile)
+
+  let domainKeyFile = domain </> "rsa.key"
+      domainCSRFile = domain </> "csr.der"
+      domainCertFile = domain </> "cert.der"
+
+  doesDirectoryExist domain >>= flip unless (createDirectory domain)
+  doesFileExist domainKeyFile >>= flip unless (genKey domainKeyFile)
+  doesFileExist domainCSRFile >>= flip unless (genReq domainKeyFile domain domainCSRFile)
+
+  csrData <- B.readFile domainCSRFile
+
+  keys@(Keys _ pub) <- readKeys privKeyFile
   let terms = fromMaybe defaultTerms termOverride
-      nonce_ = undefined
 
   -- Create user account
-  forM_ email $ \m ->
-    LB.writeFile "registration.body" =<< signPayload keys nonce_ (registration m terms)
+  runACME directoryUrl keys $ do
+    forM_ email $ register terms >=> statusReport
 
-  -- Obtain a challenge
-  LB.writeFile "challenge-request.body" =<< signPayload keys nonce_ (authz domain)
+    r <- challengeRequest domain >>= statusReport
+    let
+        httpChallenge  = responseBody . JSON.key "challenges" . to universe . traverse . (filtered . has $ ix "type" . only "http-01")
+        httpChallenge' = responseBody . JSON.key "challenges" . to universe . traverse . (filtered . has $ ix "type" . only "http-01")
+        token = r ^?! httpChallenge . JSON.key "token" . _String . to encodeUtf8
+        crUri = r ^?! httpChallenge' . JSON.key "uri" . _String . to T.unpack
+        thumb = thumbprint (JWK (rsaE pub) "RSA" (rsaN pub))
+        thumbtoken = toStrict (LB.fromChunks [token, ".", thumb])
 
-  -- Answser the challenge
-  let thumb = thumbprint (JWK (rsaE pub) "RSA" (rsaN pub))
-      -- Extracted from POST response above.
-      token = "DjyJpI3HVWAmsAwMT5ZFpW8dj19cel6ml6qaBUeGpCg"
-      thumbtoken = toStrict (LB.fromChunks [token, ".", thumb])
+    liftIO $ writeFile (challengeDir </> BC.unpack token) (BC.unpack thumbtoken)
 
-  putStrLn ("Serve http://" ++ domain ++ "/.well-known/acme-challenge/" ++ BC.unpack token)
-  putStrLn ("With content:\n" ++ BC.unpack thumbtoken)
+    -- Wait for challenge validation
+    -- TODO: first hit the local server to test whether this is valid
+    r <- pollChallenge crUri thumbtoken >>= statusReport
 
-  -- Notify Let's Encrypt we answsered the challenge
-  LB.writeFile "challenge-response.body" =<< signPayload keys nonce_ (challenge thumbtoken)
+    if r ^. responseStatus . statusCode . to isSuccess then do
 
-  -- Wait for challenge validation Send a CSR and get a certificate
-  csr_ <- B.readFile (domain ++ ".csr.der")
-  LB.writeFile "csr-request.body" =<< signPayload keys nonce_ (csr csr_)
+      liftIO $ void exitSuccess
+      -- Send a CSR and get a certificate
+      void $ saveCert csrData domainCertFile >>= statusReport
 
-  return ()
+    else liftIO $ do
+      putStrLn "Error"
+      print r
+      print $ r ^? responseBody . JSON.key "status" . _String
+
+  where
+    a </> b = a ++ "/" ++ b
+    isSuccess n = n >= 200 && n <= 300
+
+saveCert :: (MonadReader Env m, MonadState Nonce m, MonadIO m) => ByteString -> FilePath -> m (Response LC.ByteString)
+saveCert input output = do
+  r <- sendPayload _newCert (csr input)
+  liftIO $ LC.writeFile output $ r ^. responseBody
+  return r
+
+pollChallenge :: (MonadReader Env m, MonadState Nonce m, MonadIO m) => String -> ByteString -> m (Response LC.ByteString)
+pollChallenge crUri thumbtoken = do
+  liftIO $ putStrLn "polling..."
+  r <- sendPayload (const crUri) (challenge thumbtoken) >>= statusReport
+  let status = r ^? responseBody . JSON.key "status" . _String
+  if status == Just "pending"
+    then do
+      liftIO . print $ r ^. responseBody
+      liftIO . threadDelay $ 2000 * 1000
+      pollChallenge crUri thumbtoken
+    else do
+      liftIO $ putStrLn "done polling."
+      liftIO $ print r
+      return r
 
 data Env = Env { getDir :: Directory, getKeys :: Keys, getSession :: WS.Session }
 
@@ -123,7 +172,13 @@ data Directory = Directory {
 }
 newtype Nonce = Nonce String
 testRegister :: String -> IO (Response LC.ByteString)
-testRegister email = readKeys "rsa.key" >>= flip (runACME directoryUrl) (register email defaultTerms) >>= statusReport
+testRegister email = runTest (register defaultTerms email) >>= statusReport
+
+runTest :: ACME b -> IO b
+runTest t = readKeys "rsa.key" >>= flip (runACME directoryUrl) t
+
+testCR :: IO (Response LC.ByteString)
+testCR = runTest $ challengeRequest "fifty.childrenofmay.org"
 
 getDirectory :: WS.Session -> String -> IO (Maybe (Directory, Nonce))
 getDirectory sess url = do
@@ -133,7 +188,10 @@ getDirectory sess url = do
   return $ (,) <$> (Directory <$> k "new-cert" <*> k "new-authz" <*> k "revoke-cert" <*> k "new-reg") <*> nonce
 
 register :: String -> String -> ACME (Response LC.ByteString)
-register email terms = sendPayload _newReg (registration email terms)
+register terms email = sendPayload _newReg (registration email terms)
+
+challengeRequest :: (MonadIO m, MonadState Nonce m, MonadReader Env m) => String -> m (Response LC.ByteString)
+challengeRequest domain = sendPayload _newAuthz (authz domain)
 
 statusLine :: Response body -> String
 statusLine r =  (r ^. responseStatus . statusCode . to show) ++ " " ++ r ^. responseStatus . statusMessage . to (T.unpack . decodeUtf8)
