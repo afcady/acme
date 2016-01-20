@@ -24,7 +24,7 @@ import           Data.Digest.Pure.SHA       (bytestringDigest, sha256)
 import           Data.Maybe
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (decodeUtf8)
-import           Network.Wreq               (Response, responseHeader, responseBody, defaults, checkStatus)
+import           Network.Wreq               (Response, responseHeader, responseBody, responseStatus, statusCode, statusMessage, defaults, checkStatus)
 import qualified Network.Wreq.Session       as WS
 import           OpenSSL
 import           OpenSSL.EVP.Digest
@@ -123,7 +123,7 @@ data Directory = Directory {
 }
 newtype Nonce = Nonce String
 testRegister :: String -> IO (Response LC.ByteString)
-testRegister email = readKeys "rsa.key" >>= flip (runACME directoryUrl) (register email defaultTerms)
+testRegister email = readKeys "rsa.key" >>= flip (runACME directoryUrl) (register email defaultTerms) >>= statusReport
 
 getDirectory :: WS.Session -> String -> IO (Maybe (Directory, Nonce))
 getDirectory sess url = do
@@ -134,6 +134,14 @@ getDirectory sess url = do
 
 register :: String -> String -> ACME (Response LC.ByteString)
 register email terms = sendPayload _newReg (registration email terms)
+
+statusLine :: Response body -> String
+statusLine r =  (r ^. responseStatus . statusCode . to show) ++ " " ++ r ^. responseStatus . statusMessage . to (T.unpack . decodeUtf8)
+
+statusReport :: MonadIO m => Response body -> m (Response body)
+statusReport r = do
+  liftIO $ putStrLn $ statusLine r
+  return r
 
 sendPayload :: (MonadIO m, MonadState Nonce m, MonadReader Env m) => (Directory -> String) -> ByteString -> m (Response LC.ByteString)
 sendPayload reqType payload = do
