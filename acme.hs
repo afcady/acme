@@ -1,5 +1,5 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 --------------------------------------------------------------------------------
@@ -7,28 +7,30 @@
 
 module Main where
 
-import Crypto.Number.Serialize (i2osp)
-import Data.Aeson (encode, object, ToJSON(..), (.=))
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as BC
-import qualified Data.ByteString.Lazy.Char8 as LC
-import qualified Data.ByteString.Lazy as LB
+import           Control.Lens               hiding ((.=))
+import           Control.Monad
+import           Crypto.Number.Serialize    (i2osp)
+import           Data.Aeson                 (ToJSON (..), encode, object, (.=))
+import           Data.Aeson.Lens            hiding (key)
+import qualified Data.Aeson.Lens            as JSON
+import           Data.ByteString            (ByteString)
+import qualified Data.ByteString            as B
 import qualified Data.ByteString.Base64.URL as Base64
-import Data.Digest.Pure.SHA (bytestringDigest, sha256)
-import Data.Text.Encoding (decodeUtf8)
-import qualified Data.Text as T
-import OpenSSL.EVP.PKey
-import OpenSSL.PEM
-import OpenSSL.RSA
-import System.Process (readProcess)
-import Network.Wreq hiding (header)
-import Control.Lens hiding ((.=))
-import Data.Aeson.Lens hiding (key)
-import qualified Data.Aeson.Lens as JSON
-import Options.Applicative hiding (header)
-import qualified Options.Applicative as Opt
-import Data.Maybe
+import qualified Data.ByteString.Char8      as BC
+import qualified Data.ByteString.Lazy       as LB
+import qualified Data.ByteString.Lazy.Char8 as LC
+import           Data.Digest.Pure.SHA       (bytestringDigest, sha256)
+import           Data.Maybe
+import qualified Data.Text                  as T
+import           Data.Text.Encoding         (decodeUtf8)
+import           Network.Wreq               hiding (header)
+import           OpenSSL.EVP.PKey
+import           OpenSSL.PEM
+import           OpenSSL.RSA
+import           Options.Applicative        hiding (header)
+import qualified Options.Applicative        as Opt
+import           System.Directory
+import           System.Process             (readProcess)
 
 directoryUrl :: String
 directoryUrl =  "https://acme-v01.api.letsencrypt.org/directory"
@@ -41,9 +43,9 @@ main = execParser opts >>= go
 
 data CmdOpts = CmdOpts {
       optKeyFile :: String,
-      optDomain :: String,
-      optEmail :: String,
-      optTerms :: Maybe String
+      optDomain  :: String,
+      optEmail   :: Maybe String,
+      optTerms   :: Maybe String
 }
 
 defaultTerms :: String
@@ -52,14 +54,19 @@ defaultTerms = "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
 cmdopts :: Parser CmdOpts
 cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <> help "filename of your private RSA key")
                   <*> strOption (long "domain" <> metavar "DOMAIN" <> help "the domain name to certify")
-                  <*> strOption (long "email" <> metavar "ADDRESS" <> help "an email address with which to register an account")
+                  <*> optional (strOption (long "email" <> metavar "ADDRESS" <> help "an email address with which to register an account"))
                   <*> optional (strOption (long "terms" <> metavar "URL" <> help "the terms param of the registration request"))
+
+genKey :: String -> IO ()
+genKey privKeyFile = readProcess "openssl" (words "genrsa 4096 -out" ++ [privKeyFile]) "" >>= writeFile privKeyFile
 
 go :: CmdOpts -> IO ()
 go (CmdOpts privKeyFile domain email termOverride) = do
   let terms = fromMaybe defaultTerms termOverride
+  doesFileExist privKeyFile >>= flip unless (genKey privKeyFile)
   userKey_ <- readFile privKeyFile >>= flip readPrivateKey PwTTY
-  case toPublicKey $ fromPublicKey userKey_ of
+  pub <- maybe (return Nothing) (rsaCopyPublic >=> return . Just) (toKeyPair userKey_ :: Maybe RSAKeyPair)
+  case pub of
     Nothing -> error "Error: failed to parse RSA key."
     Just (userKey :: RSAPubKey) -> do
 
@@ -68,7 +75,7 @@ go (CmdOpts privKeyFile domain email termOverride) = do
       let protected = b64 (header userKey nonce_)
 
       -- Create user account
-      signPayload "registration" privKeyFile userKey protected (registration email terms)
+      forM_ email $ \m -> signPayload "registration" privKeyFile userKey protected (registration m terms)
 
       -- Obtain a challenge
       signPayload "challenge-request" privKeyFile userKey protected (authz domain)
@@ -93,11 +100,11 @@ go (CmdOpts privKeyFile domain email termOverride) = do
       signPayload "csr-request" privKeyFile userKey protected (csr csr_)
 
 data Directory = Directory {
-  _newCert :: String,
-  _newAuthz :: String,
+  _newCert    :: String,
+  _newAuthz   :: String,
   _revokeCert :: String,
-  _newReg :: String,
-  _nonce :: String
+  _newReg     :: String,
+  _nonce      :: String
 }
 
 getDirectory :: String -> IO (Maybe Directory)
@@ -195,16 +202,16 @@ encodeOrdered JWK{..} = LC.pack $
 
 --------------------------------------------------------------------------------
 data Header = Header
-  { hAlg :: String
-  , hJwk :: JWK
+  { hAlg   :: String
+  , hJwk   :: JWK
   , hNonce :: Maybe String
   }
   deriving Show
 
 data JWK = JWK
-  { hE :: Integer
+  { hE   :: Integer
   , hKty :: String
-  , hN :: Integer
+  , hN   :: Integer
   }
   deriving Show
 
@@ -222,7 +229,7 @@ instance ToJSON JWK where
     ]
 
 data Reg = Reg
-  { rMail :: String
+  { rMail      :: String
   , rAgreement :: String
   }
   deriving Show
@@ -235,9 +242,9 @@ instance ToJSON Reg where
     ]
 
 data Request = Request
-  { rHeader :: Header
+  { rHeader    :: Header
   , rProtected :: ByteString
-  , rPayload :: ByteString
+  , rPayload   :: ByteString
   , rSignature :: ByteString
   }
   deriving Show
