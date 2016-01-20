@@ -24,8 +24,8 @@ import           Data.Digest.Pure.SHA       (bytestringDigest, sha256)
 import           Data.Maybe
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (decodeUtf8)
-import           Network.Wreq               hiding (header, get, post, put)
-import qualified Network.Wreq               as W
+import           Network.Wreq               (Response, responseHeader, responseBody, defaults, checkStatus)
+import qualified Network.Wreq.Session       as WS
 import           OpenSSL
 import           OpenSSL.EVP.Digest
 import           OpenSSL.EVP.PKey
@@ -107,13 +107,13 @@ go (CmdOpts privKeyFile domain email termOverride) = do
 
   return ()
 
-data Env = Env { getDir :: Directory, getKeys :: Keys }
+data Env = Env { getDir :: Directory, getKeys :: Keys, getSession :: WS.Session }
 
 type ACME a = RWST Env () Nonce IO a
 runACME :: String -> Keys -> ACME a -> IO a
-runACME url keys f = do
-  Just (dir, nonce) <- getDirectory url
-  fst <$> evalRWST f (Env dir keys) nonce
+runACME url keys f = WS.withSession $ \sess -> do
+  Just (dir, nonce) <- getDirectory sess url
+  fst <$> evalRWST f (Env dir keys sess) nonce
 
 data Directory = Directory {
   _newCert    :: String,
@@ -125,9 +125,9 @@ newtype Nonce = Nonce String
 testRegister :: String -> IO (Response LC.ByteString)
 testRegister email = readKeys "rsa.key" >>= flip (runACME directoryUrl) (register email defaultTerms)
 
-getDirectory :: String -> IO (Maybe (Directory, Nonce))
-getDirectory url = do
-  r <- W.get url
+getDirectory :: WS.Session -> String -> IO (Maybe (Directory, Nonce))
+getDirectory sess url = do
+  r <- WS.get sess url
   let nonce = r ^? responseHeader "Replay-Nonce" . to (Nonce . T.unpack . decodeUtf8)
       k x   = r ^? responseBody . JSON.key x . _String . to T.unpack
   return $ (,) <$> (Directory <$> k "new-cert" <*> k "new-authz" <*> k "revoke-cert" <*> k "new-reg") <*> nonce
@@ -141,10 +141,17 @@ sendPayload reqType payload = do
   dir <- asks getDir
   nonce <- gets coerce
   signed <- liftIO $ signPayload keys nonce payload
+  post (reqType dir) signed
 
-  r <- liftIO $ W.post (reqType dir) signed
+-- post :: (MonadReader Env m, MonadState Nonce m, MonadIO m, Postable a) => String -> a -> m (Response LC.ByteString)
+post url payload = do
+  sess <- asks getSession
+  r <- liftIO $ WS.postWith noStatusCheck sess url payload
   put $ r ^?! responseHeader "Replay-Nonce" . to (Nonce . T.unpack . decodeUtf8)
   return r
+  where
+    noStatusCheck = defaults & checkStatus .~ Just nullChecker
+    nullChecker _ _ _ = Nothing
 
 --------------------------------------------------------------------------------
 -- | Sign return a payload with a nonce-protected header.
