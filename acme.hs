@@ -24,16 +24,16 @@ import           Data.Maybe
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (decodeUtf8)
 import           Network.Wreq               hiding (header)
+import           OpenSSL
+import           OpenSSL.EVP.Digest
 import           OpenSSL.EVP.PKey
+import           OpenSSL.EVP.Sign
 import           OpenSSL.PEM
 import           OpenSSL.RSA
 import           Options.Applicative        hiding (header)
 import qualified Options.Applicative        as Opt
 import           System.Directory
 import           System.Process             (readProcess)
-import OpenSSL.EVP.Sign
-import OpenSSL.EVP.Digest
-import OpenSSL
 
 directoryUrl :: String
 directoryUrl =  "https://acme-v01.api.letsencrypt.org/directory"
@@ -78,10 +78,10 @@ go (CmdOpts privKeyFile domain email termOverride) = do
       let protected = b64 (header userKey nonce_)
 
       -- Create user account
-      forM_ email $ \m -> signPayload "registration" priv privKeyFile userKey protected (registration m terms)
+      forM_ email $ \m -> signPayload "registration" priv userKey protected (registration m terms)
 
       -- Obtain a challenge
-      signPayload "challenge-request" priv privKeyFile userKey protected (authz domain)
+      signPayload "challenge-request" priv userKey protected (authz domain)
 
       -- Answser the challenge
       let thumb = thumbprint (JWK (rsaE userKey) "RSA" (rsaN userKey))
@@ -94,13 +94,13 @@ go (CmdOpts privKeyFile domain email termOverride) = do
       putStrLn ("With content:\n" ++ BC.unpack thumbtoken)
 
       -- Notify Let's Encrypt we answsered the challenge
-      signPayload "challenge-response" priv privKeyFile userKey protected (challenge thumbtoken)
+      signPayload "challenge-response" priv userKey protected (challenge thumbtoken)
 
       -- Wait for challenge validation
 
       -- Send a CSR and get a certificate
       csr_ <- B.readFile (domain ++ ".csr.der")
-      signPayload "csr-request" priv privKeyFile userKey protected (csr csr_)
+      signPayload "csr-request" priv userKey protected (csr csr_)
 
 data Directory = Directory {
   _newCert    :: String,
@@ -122,43 +122,19 @@ getNonce = fmap _nonce <$> getDirectory directoryUrl
 
 --------------------------------------------------------------------------------
 -- | Sign and write a payload to a file with a nonce-protected header.
-signPayload :: (RSAKey k, KeyPair kp) => String -> kp -> String -> k -> ByteString -> ByteString -> IO ()
-signPayload name priv privKeyFile key protected payload = withOpenSSL $ do
-  writePayload name protected payload
-  sig <- Main.sign privKeyFile name
+signPayload :: (RSAKey k, KeyPair kp) => String -> kp -> k -> ByteString -> ByteString -> IO ()
+signPayload name priv key protected payload = withOpenSSL $ do
   Just dig <- getDigestByName "SHA256"
-  sig' <- signBS dig priv (B.concat [protected, ".", payload])
+  sig <- signBS dig priv (B.concat [protected, ".", payload])
   writeBody name key protected payload sig
-  writeBody (name ++ ".internal") key protected payload (b64 sig')
-
--- | Write a payload to file with a nonce-protected header.
-writePayload :: String -> ByteString -> ByteString -> IO ()
-writePayload name protected payload =
-  LB.writeFile (name ++ ".txt") (LB.fromChunks [protected, ".", payload])
-
--- | Sign a payload file using the user key.
-sign :: String -> String -> IO ByteString
-sign privKeyFile name = do
-  sign_ privKeyFile (name ++ ".txt") (name ++ ".sig")
-  sig_ <- B.readFile (name ++ ".sig")
-  return (b64 sig_)
-
-sign_ :: String -> String -> String -> IO ()
-sign_ privKeyFile inp out = do
-  _ <- readProcess "openssl"
-    [ "dgst", "-sha256"
-    , "-sign", privKeyFile
-    , "-out", out
-    , inp
-    ]
-    ""
-  return ()
 
 -- | Write a signed payload to a file. It can be used as the body of a POST
 -- request.
 writeBody :: RSAKey k => String -> k -> ByteString -> ByteString -> ByteString -> IO ()
-writeBody name key protected payload sig = LB.writeFile (name ++ ".body")
-  (encode (Request (header' key) protected payload sig))
+writeBody name key protected payload sig = LB.writeFile (name ++ ".body") $ buildBody key protected payload sig
+
+buildBody :: RSAKey k => k -> ByteString -> ByteString -> ByteString -> LC.ByteString
+buildBody key protected payload sig = encode (Request (header' key) protected payload sig)
 
 --------------------------------------------------------------------------------
 -- | Base64URL encoding of Integer with padding '=' removed.
