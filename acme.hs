@@ -63,27 +63,28 @@ cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <> help "filename 
 genKey :: String -> IO ()
 genKey privKeyFile = readProcess "openssl" (words "genrsa 4096 -out" ++ [privKeyFile]) "" >>= writeFile privKeyFile
 
+data Keys = Keys SomeKeyPair RSAPubKey
+readKeys :: String -> IO Keys
+readKeys privKeyFile = do
+  priv <- readFile privKeyFile >>= flip readPrivateKey PwTTY
+  pub <- rsaCopyPublic $ fromMaybe (error "Error: failed to parse RSA key.") (toKeyPair priv :: Maybe RSAKeyPair)
+  return $ Keys priv pub
+
 go :: CmdOpts -> IO ()
 go (CmdOpts privKeyFile domain email termOverride) = do
-
   doesFileExist privKeyFile >>= flip unless (genKey privKeyFile)
-
-  priv <- readFile privKeyFile >>= flip readPrivateKey PwTTY
-  mbPub <- maybe (return Nothing) (rsaCopyPublic >=> return . Just)
-             (toKeyPair priv :: Maybe RSAKeyPair)
+  keys@(Keys _ pub) <- readKeys privKeyFile
 
   let terms = fromMaybe defaultTerms termOverride
-      pub :: RSAPubKey
-      pub = fromMaybe (error "Error: failed to parse RSA key.") mbPub
 
   Just nonce_ <- getNonce
 
   -- Create user account
   forM_ email $ \m ->
-    LB.writeFile "registration.body" =<< signPayload priv pub nonce_ (registration m terms)
+    LB.writeFile "registration.body" =<< signPayload keys nonce_ (registration m terms)
 
   -- Obtain a challenge
-  LB.writeFile "challenge-request.body" =<< signPayload priv pub nonce_ (authz domain)
+  LB.writeFile "challenge-request.body" =<< signPayload keys nonce_ (authz domain)
 
   -- Answser the challenge
   let thumb = thumbprint (JWK (rsaE pub) "RSA" (rsaN pub))
@@ -95,13 +96,16 @@ go (CmdOpts privKeyFile domain email termOverride) = do
   putStrLn ("With content:\n" ++ BC.unpack thumbtoken)
 
   -- Notify Let's Encrypt we answsered the challenge
-  LB.writeFile "challenge-response.body" =<< signPayload priv pub nonce_ (challenge thumbtoken)
+  LB.writeFile "challenge-response.body" =<< signPayload keys nonce_ (challenge thumbtoken)
 
   -- Wait for challenge validation Send a CSR and get a certificate
   csr_ <- B.readFile (domain ++ ".csr.der")
-  LB.writeFile "csr-request.body" =<< signPayload priv pub nonce_ (csr csr_)
+  LB.writeFile "csr-request.body" =<< signPayload keys nonce_ (csr csr_)
 
   return ()
+
+register :: Keys -> String -> String -> IO (Response LC.ByteString)
+register keys email terms = sendPayload keys _newReg (registration email terms)
 
 data Directory = Directory {
   _newCert    :: String,
@@ -123,12 +127,20 @@ getNonce = fmap _nonce <$> getDirectory directoryUrl
 
 --------------------------------------------------------------------------------
 -- | Sign and write a payload to a file with a nonce-protected header.
-signPayload :: (RSAKey k, KeyPair kp) => kp -> k -> String -> ByteString -> IO LC.ByteString
-signPayload priv pub nonce_ payload = withOpenSSL $ do
+signPayload :: Keys -> String -> ByteString -> IO LC.ByteString
+signPayload (Keys priv pub) nonce_ payload = withOpenSSL $ do
   let protected = b64 (header pub nonce_)
   Just dig <- getDigestByName "SHA256"
   sig <- b64 <$> signBS dig priv (B.concat [protected, ".", payload])
   return $ buildBody pub protected payload sig
+
+sendPayload :: Keys -> (Directory -> String) -> ByteString -> IO (Response LC.ByteString)
+sendPayload keys reqType payload = do
+  dir <- fromMaybe (error "Error fetching directory") <$> getDirectory directoryUrl
+  let nonce = _nonce dir
+      url = reqType dir
+  signed <- signPayload keys nonce payload
+  post url signed
 
 buildBody :: RSAKey k => k -> ByteString -> ByteString -> ByteString -> LC.ByteString
 buildBody key protected payload sig = encode (Request (header' key) protected payload sig)
