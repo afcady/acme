@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 --------------------------------------------------------------------------------
 -- | Get a certificate from Let's Encrypt using the ACME protocol.
@@ -23,7 +24,8 @@ import           Data.Digest.Pure.SHA       (bytestringDigest, sha256)
 import           Data.Maybe
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (decodeUtf8)
-import           Network.Wreq               hiding (header)
+import           Network.Wreq               hiding (header, get, post, put)
+import qualified Network.Wreq               as W
 import           OpenSSL
 import           OpenSSL.EVP.Digest
 import           OpenSSL.EVP.PKey
@@ -34,6 +36,8 @@ import           Options.Applicative        hiding (header)
 import qualified Options.Applicative        as Opt
 import           System.Directory
 import           System.Process             (readProcess)
+import Control.Monad.RWS.Strict
+import Data.Coerce
 
 directoryUrl :: String
 directoryUrl =  "https://acme-v01.api.letsencrypt.org/directory"
@@ -76,8 +80,7 @@ go (CmdOpts privKeyFile domain email termOverride) = do
   keys@(Keys _ pub) <- readKeys privKeyFile
 
   let terms = fromMaybe defaultTerms termOverride
-
-  Just nonce_ <- getNonce
+      nonce_ = undefined
 
   -- Create user account
   forM_ email $ \m ->
@@ -104,46 +107,53 @@ go (CmdOpts privKeyFile domain email termOverride) = do
 
   return ()
 
-register :: Keys -> String -> String -> IO (Response LC.ByteString)
-register keys email terms = sendPayload keys _newReg (registration email terms)
+data Env = Env { getDir :: Directory, getKeys :: Keys }
+
+type ACME a = RWST Env () Nonce IO a
+runACME :: String -> Keys -> ACME a -> IO a
+runACME url keys f = do
+  Just (dir, nonce) <- getDirectory url
+  fst <$> evalRWST f (Env dir keys) nonce
 
 data Directory = Directory {
   _newCert    :: String,
   _newAuthz   :: String,
   _revokeCert :: String,
-  _newReg     :: String,
-  _nonce      :: String
+  _newReg     :: String
 }
+newtype Nonce = Nonce String
+testRegister :: String -> IO (Response LC.ByteString)
+testRegister email = readKeys "rsa.key" >>= flip (runACME directoryUrl) (register email defaultTerms)
 
-getDirectory :: String -> IO (Maybe Directory)
+getDirectory :: String -> IO (Maybe (Directory, Nonce))
 getDirectory url = do
-  r <- get url
-  let nonce = r ^? responseHeader "Replay-Nonce" . to (T.unpack . decodeUtf8)
+  r <- W.get url
+  let nonce = r ^? responseHeader "Replay-Nonce" . to (Nonce . T.unpack . decodeUtf8)
       k x   = r ^? responseBody . JSON.key x . _String . to T.unpack
-  return $ Directory <$> k "new-cert" <*> k "new-authz" <*> k "revoke-cert" <*> k "new-reg" <*> nonce
+  return $ (,) <$> (Directory <$> k "new-cert" <*> k "new-authz" <*> k "revoke-cert" <*> k "new-reg") <*> nonce
 
-getNonce :: IO (Maybe String)
-getNonce = fmap _nonce <$> getDirectory directoryUrl
+register :: String -> String -> ACME (Response LC.ByteString)
+register email terms = sendPayload _newReg (registration email terms)
+
+sendPayload :: (MonadIO m, MonadState Nonce m, MonadReader Env m) => (Directory -> String) -> ByteString -> m (Response LC.ByteString)
+sendPayload reqType payload = do
+  keys <- asks getKeys
+  dir <- asks getDir
+  nonce <- gets coerce
+  signed <- liftIO $ signPayload keys nonce payload
+
+  r <- liftIO $ W.post (reqType dir) signed
+  put $ r ^?! responseHeader "Replay-Nonce" . to (Nonce . T.unpack . decodeUtf8)
+  return r
 
 --------------------------------------------------------------------------------
--- | Sign and write a payload to a file with a nonce-protected header.
+-- | Sign return a payload with a nonce-protected header.
 signPayload :: Keys -> String -> ByteString -> IO LC.ByteString
 signPayload (Keys priv pub) nonce_ payload = withOpenSSL $ do
   let protected = b64 (header pub nonce_)
   Just dig <- getDigestByName "SHA256"
   sig <- b64 <$> signBS dig priv (B.concat [protected, ".", payload])
-  return $ buildBody pub protected payload sig
-
-sendPayload :: Keys -> (Directory -> String) -> ByteString -> IO (Response LC.ByteString)
-sendPayload keys reqType payload = do
-  dir <- fromMaybe (error "Error fetching directory") <$> getDirectory directoryUrl
-  let nonce = _nonce dir
-      url = reqType dir
-  signed <- signPayload keys nonce payload
-  post url signed
-
-buildBody :: RSAKey k => k -> ByteString -> ByteString -> ByteString -> LC.ByteString
-buildBody key protected payload sig = encode (Request (header' key) protected payload sig)
+  return $ encode (Request (header' pub) protected payload sig)
 
 --------------------------------------------------------------------------------
 -- | Base64URL encoding of Integer with padding '=' removed.

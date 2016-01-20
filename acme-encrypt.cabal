@@ -24,7 +24,7 @@ executable acme-encrypt-exe
   build-depends:       base,
                        cryptonite, aeson, bytestring, base64-bytestring, SHA,
                        text, HsOpenSSL, process, wreq, lens, lens-aeson,
-                       optparse-applicative, directory
+                       optparse-applicative, directory, mtl
                      -- , acme-encrypt
   default-language:    Haskell2010
 
