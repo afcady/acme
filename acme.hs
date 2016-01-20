@@ -17,6 +17,7 @@ import qualified Data.ByteString.Lazy as LB
 import qualified Data.ByteString.Base64.URL as Base64
 import Data.Digest.Pure.SHA (bytestringDigest, sha256)
 import Data.Text.Encoding (decodeUtf8)
+import qualified Data.Text as T
 import OpenSSL.EVP.PKey
 import OpenSSL.PEM (readPublicKey)
 import OpenSSL.RSA
@@ -31,6 +32,9 @@ main = do
   case toPublicKey userKey_ of
     Nothing -> error "Not a public RSA key."
     Just (userKey :: RSAPubKey) -> do
+
+      nonce_ <- view (responseHeader "Replay-Nonce" . to (T.unpack . decodeUtf8)) <$> get "https://acme-v01.api.letsencrypt.org/directory"
+
       let protected = b64 (header userKey nonce_)
 
       -- Create user account
@@ -64,9 +68,6 @@ main = do
 
     domain :: String
     domain = "aaa.reesd.com"
-
-    nonce_ :: String
-    nonce_ = "ckYlMQ7BflfUb7HmxipdSpnkFle83-8lUkn50U-X97Q"
 
     terms :: String
     terms = "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
