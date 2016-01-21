@@ -11,7 +11,7 @@ module Main where
 import           Control.Lens               hiding ((.=))
 import           Control.Monad
 import           Crypto.Number.Serialize    (i2osp)
-import           Data.Aeson                 (ToJSON (..), encode, object, (.=))
+import           Data.Aeson                 (ToJSON (..), encode, object, (.=), Value)
 import           Data.Aeson.Lens            hiding (key)
 import qualified Data.Aeson.Lens            as JSON
 import           Data.ByteString            (ByteString)
@@ -107,10 +107,12 @@ go (CmdOpts privKeyFile domain challengeDir email termOverride) = do
 
     r <- challengeRequest domain >>= statusReport
     let
+
+        httpChallenge  :: (Value -> Const (Endo s) Value) -> Response LC.ByteString -> Const (Endo s) (Response LC.ByteString)
         httpChallenge  = responseBody . JSON.key "challenges" . to universe . traverse . (filtered . has $ ix "type" . only "http-01")
-        httpChallenge' = responseBody . JSON.key "challenges" . to universe . traverse . (filtered . has $ ix "type" . only "http-01")
+
         token = r ^?! httpChallenge . JSON.key "token" . _String . to encodeUtf8
-        crUri = r ^?! httpChallenge' . JSON.key "uri" . _String . to T.unpack
+        crUri = r ^?! httpChallenge . JSON.key "uri" . _String . to T.unpack
         thumb = thumbprint (JWK (rsaE pub) "RSA" (rsaN pub))
         thumbtoken = toStrict (LB.fromChunks [token, ".", thumb])
 
