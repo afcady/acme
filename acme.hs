@@ -28,12 +28,15 @@ import qualified Data.ByteString.Lazy.Char8 as LC
 import           Data.Coerce
 import           Data.Digest.Pure.SHA       (bytestringDigest, sha256)
 import           Data.Maybe
+import           Data.String                (fromString)
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (decodeUtf8, encodeUtf8)
+import           Data.Time.Clock.POSIX      (getPOSIXTime)
 import           Network.Wreq               (Response, checkStatus, defaults,
                                              responseBody, responseHeader,
                                              responseStatus, statusCode,
                                              statusMessage)
+import qualified Network.Wreq               as W
 import qualified Network.Wreq.Session       as WS
 import           OpenSSL
 import           OpenSSL.EVP.Digest
@@ -129,42 +132,61 @@ readKeys privKeyFile = do
 data ChallengeRequest = ChallengeRequest { crUri :: String, crToken :: ByteString, crThumbToken :: ByteString }
 
 go :: CmdOpts -> IO ()
-go (CmdOpts privKeyFile domain challengeDir altDomainDir email termOverride staging) = do
-  let terms           = fromMaybe defaultTerms termOverride
-      directoryUrl    = if staging then stagingDirectoryUrl else liveDirectoryUrl
+go CmdOpts{..} = do
+  let terms           = fromMaybe defaultTerms optTerms
+      directoryUrl    = if optStaging then stagingDirectoryUrl else liveDirectoryUrl
       domainKeyFile   = domainDir </> "rsa.key"
       domainCSRFile   = domainDir </> "csr.der"
       domainCertFile  = domainDir </> "cert.der"
-      domainDir       = fromMaybe domain altDomainDir
+      domainDir       = fromMaybe optDomain optDomainDir
+      privKeyFile     = optKeyFile
 
   doesFileExist privKeyFile >>= flip unless (genKey privKeyFile)
 
-  doesDirectoryExist domain >>= flip unless (createDirectory domainDir)
+  doesDirectoryExist optDomain >>= flip unless (createDirectory domainDir)
   doesFileExist domainKeyFile >>= flip unless (genKey domainKeyFile)
 
   keys <- readKeys privKeyFile
 
-  doesFileExist domainCSRFile >>= flip unless (genReq domainKeyFile domain >>= B.writeFile domainCSRFile)
+  doesFileExist domainCSRFile >>= flip unless (genReq domainKeyFile optDomain >>= B.writeFile domainCSRFile)
 
   csrData <- B.readFile domainCSRFile
 
-  -- TODO: verify that challengeDir is writable before continuing.
+  ensureWritable optChallengeDir "challenge directory"
+  ensureWritable domainDir "domain directory"
+
+  canProvision optDomain optChallengeDir >>= flip unless (error "Error: cannot provision files to web server via challenge directory")
 
   runACME directoryUrl keys $ do
-    forM_ email $ register terms >=> statusReport
+    forM_ optEmail $ register terms >=> statusReport
 
-    (ChallengeRequest nextUri token thumbtoken) <- challengeRequest domain >>= statusReport >>= extractCR
+    (ChallengeRequest nextUri token thumbtoken) <- challengeRequest optDomain >>= statusReport >>= extractCR
 
-    liftIO $ BC.writeFile (challengeDir </> BC.unpack token) thumbtoken
-
-    -- TODO: first hit the local server to test whether this is valid
+    liftIO $ BC.writeFile (optChallengeDir </> BC.unpack token) thumbtoken
 
     notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
 
     retrieveCert csrData >>= statusReport >>= saveCert domainCertFile
 
-  where
-    a </> b = a ++ "/" ++ b
+(</>) :: String -> String -> String
+a </> b = a ++ "/" ++ b
+
+canProvision :: String -> FilePath -> IO Bool
+canProvision domain challengeDir = do
+  randomish <- fromString . show <$> getPOSIXTime
+
+  let absFile = challengeDir </> relFile
+      relFile = ".test." ++ show randomish
+
+  LC.writeFile absFile randomish
+  r <- W.get $ "http://" ++ domain </> ".well-known/acme-challenge" </> relFile
+  removeFile absFile
+  return $ r ^. responseBody == randomish
+
+
+ensureWritable :: FilePath -> String -> IO ()
+ensureWritable file name = (writable <$> getPermissions file) >>= flip unless (err name)
+  where err n = error $ "Error: " ++ n ++ " is not writable"
 
 extractCR :: MonadReader Env m => Response LC.ByteString -> m ChallengeRequest
 extractCR r = do
