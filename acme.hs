@@ -1,7 +1,8 @@
-{-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE RecordWildCards     #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE RecordWildCards       #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
 
 --------------------------------------------------------------------------------
 -- | Get a certificate from Let's Encrypt using the ACME protocol.
@@ -10,10 +11,13 @@
 
 module Main where
 
+import           Control.Concurrent         (threadDelay)
 import           Control.Lens               hiding ((.=))
 import           Control.Monad
+import           Control.Monad.RWS.Strict
 import           Crypto.Number.Serialize    (i2osp)
-import           Data.Aeson                 (ToJSON (..), encode, object, (.=), Value)
+import           Data.Aeson                 (ToJSON (..), Value, encode, object,
+                                             (.=))
 import           Data.Aeson.Lens            hiding (key)
 import qualified Data.Aeson.Lens            as JSON
 import           Data.ByteString            (ByteString)
@@ -22,11 +26,15 @@ import qualified Data.ByteString.Base64.URL as Base64
 import qualified Data.ByteString.Char8      as BC
 import qualified Data.ByteString.Lazy       as LB
 import qualified Data.ByteString.Lazy.Char8 as LC
+import           Data.Coerce
 import           Data.Digest.Pure.SHA       (bytestringDigest, sha256)
 import           Data.Maybe
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (decodeUtf8, encodeUtf8)
-import           Network.Wreq               (Response, responseHeader, responseBody, responseStatus, statusCode, statusMessage, defaults, checkStatus)
+import           Network.Wreq               (Response, checkStatus, defaults,
+                                             responseBody, responseHeader,
+                                             responseStatus, statusCode,
+                                             statusMessage)
 import qualified Network.Wreq.Session       as WS
 import           OpenSSL
 import           OpenSSL.EVP.Digest
@@ -37,14 +45,11 @@ import           OpenSSL.RSA
 import           Options.Applicative        hiding (header)
 import qualified Options.Applicative        as Opt
 import           System.Directory
+import           System.Exit
 import           System.Process             (readProcess)
-import Control.Monad.RWS.Strict
-import Data.Coerce
-import Control.Concurrent (threadDelay)
-import System.Exit
 
 directoryUrl :: String
-directoryUrl =  "https://acme-v01.api.letsencrypt.org/directory"
+directoryUrl = "https://acme-v01.api.letsencrypt.org/directory"
 
 main :: IO ()
 main = execParser opts >>= go
@@ -53,11 +58,11 @@ main = execParser opts >>= go
     detailedDescription = "This is a work in progress."
 
 data CmdOpts = CmdOpts {
-      optKeyFile :: String,
-      optDomain  :: String,
+      optKeyFile      :: String,
+      optDomain       :: String,
       optChallengeDir :: String,
-      optEmail   :: Maybe String,
-      optTerms   :: Maybe String
+      optEmail        :: Maybe String,
+      optTerms        :: Maybe String
 }
 
 defaultTerms :: String
