@@ -5,6 +5,8 @@
 
 --------------------------------------------------------------------------------
 -- | Get a certificate from Let's Encrypt using the ACME protocol.
+--
+-- https://github.com/ietf-wg-acme/acme/blob/master/draft-ietf-acme-acme.md
 
 module Main where
 
@@ -113,10 +115,16 @@ go (CmdOpts privKeyFile domain challengeDir email termOverride) = do
 
         token = r ^?! httpChallenge . JSON.key "token" . _String . to encodeUtf8
         crUri = r ^?! httpChallenge . JSON.key "uri" . _String . to T.unpack
+
         thumb = thumbprint (JWK (rsaE pub) "RSA" (rsaN pub))
         thumbtoken = toStrict (LB.fromChunks [token, ".", thumb])
 
-    liftIO $ writeFile (challengeDir </> BC.unpack token) (BC.unpack thumbtoken)
+    liftIO $ do
+      mapM_ print $ r ^@.. httpChallenge . members
+      print $ encodeOrdered (JWK (rsaE pub) "RSA" (rsaN pub))
+
+    -- liftIO $ LC.writeFile (challengeDir </> BC.unpack token) p
+    liftIO $ BC.writeFile (challengeDir </> BC.unpack token) thumbtoken
 
     -- Wait for challenge validation
     -- TODO: first hit the local server to test whether this is valid
@@ -128,10 +136,7 @@ go (CmdOpts privKeyFile domain challengeDir email termOverride) = do
       -- Send a CSR and get a certificate
       void $ saveCert csrData domainCertFile >>= statusReport
 
-    else liftIO $ do
-      putStrLn "Error"
-      print r
-      print $ r ^? responseBody . JSON.key "status" . _String
+    else liftIO $ putStrLn "Error"
 
   where
     a </> b = a ++ "/" ++ b
@@ -144,19 +149,23 @@ saveCert input output = do
   return r
 
 pollChallenge :: (MonadReader Env m, MonadState Nonce m, MonadIO m) => String -> ByteString -> m (Response LC.ByteString)
-pollChallenge crUri thumbtoken = do
-  liftIO $ putStrLn "polling..."
-  r <- sendPayload (const crUri) (challenge thumbtoken) >>= statusReport
-  let status = r ^? responseBody . JSON.key "status" . _String
-  if status == Just "pending"
-    then do
-      liftIO . print $ r ^. responseBody
+pollChallenge crUri thumbtoken = loop
+  where
+    loop = do
       liftIO . threadDelay $ 2000 * 1000
-      pollChallenge crUri thumbtoken
-    else do
-      liftIO $ putStrLn "done polling."
-      liftIO $ print r
-      return r
+      liftIO $ putStrLn "polling..."
+      r <- sendPayload (const crUri) (challenge thumbtoken) >>= statusReport
+      let status = r ^? responseBody . JSON.key "status" . _String
+      if status == Just "pending"
+        then do
+          liftIO . print $ r ^. responseBody
+          liftIO . print $ r ^? responseBody . JSON.key "keyAuthorization" . _String
+          liftIO . threadDelay $ 2000 * 1000
+          loop
+        else do
+          liftIO $ putStrLn "done polling."
+          liftIO $ print r
+          return r
 
 data Env = Env { getDir :: Directory, getKeys :: Keys, getSession :: WS.Session }
 
@@ -246,7 +255,7 @@ header' key = Header "RS256" (JWK (rsaE key) "RSA" (rsaN key)) Nothing
 
 header :: RSAKey k => k -> String -> ByteString
 header key nonce = (toStrict . encode)
-  (Header "RS256" (JWK (rsaE key) "RSA" (rsaN key)) (Just nonce))
+                     (Header "RS256" (JWK (rsaE key) "RSA" (rsaN key)) (Just nonce))
 
 -- | Registration payload to sign with user key.
 registration :: String -> String -> ByteString
@@ -265,7 +274,7 @@ csr :: ByteString -> ByteString
 csr = b64 . toStrict . encode . CSR . b64
 
 thumbprint :: JWK -> ByteString
-thumbprint = b64 . toStrict .bytestringDigest . sha256 . encodeOrdered
+thumbprint = b64 . toStrict . bytestringDigest . sha256 . encodeOrdered
 
 -- | There is an `encodePretty'` in `aeson-pretty`, but do it by hand here.
 encodeOrdered :: JWK -> LB.ByteString
@@ -295,7 +304,7 @@ instance ToJSON Header where
   toJSON Header{..} = object $
     [ "alg" .= hAlg
     , "jwk" .= toJSON hJwk
-    ] ++ maybe [] ((:[]) . ("nonce" .=)) hNonce
+    ] ++ maybeToList (("nonce" .=) <$> hNonce)
 
 instance ToJSON JWK where
   toJSON JWK{..} = object
