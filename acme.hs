@@ -61,6 +61,7 @@ data CmdOpts = CmdOpts {
       optKeyFile      :: String,
       optDomain       :: String,
       optChallengeDir :: String,
+      optDomainDir    :: Maybe String,
       optEmail        :: Maybe String,
       optTerms        :: Maybe String,
       optStaging      :: Bool
@@ -70,12 +71,33 @@ defaultTerms :: String
 defaultTerms = "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
 
 cmdopts :: Parser CmdOpts
-cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <> help "filename of your private RSA key")
-                  <*> strOption (long "domain" <> metavar "DOMAIN" <> help "the domain name to certify")
-                  <*> strOption (long "dir" <> metavar "DIR" <> help "output directory for ACME challenges")
-                  <*> optional (strOption (long "email" <> metavar "ADDRESS" <> help "an email address with which to register an account"))
-                  <*> optional (strOption (long "terms" <> metavar "URL" <> help "the terms param of the registration request"))
-                  <*> switch (long "staging" <> help "use staging servers instead of live servers (certificates will not be real!)")
+cmdopts = CmdOpts <$> strOption
+                        (long "key" <> metavar "FILE" <> help "filename of your private RSA key")
+                  <*> strOption
+                        (long "domain" <> metavar "DOMAIN" <> help "the domain name to certify")
+                  <*> strOption
+                        (long "challenge-dir" <>
+                         metavar "DIR" <>
+                         help "output directory for ACME challenges")
+                  <*> optional
+                        (strOption
+                           (long "domain-dir" <>
+                            metavar "DIR" <>
+                            help
+                              "directory in which to domain certificates and keys are stored; the default is to use the domain name as a directory name"))
+                  <*> optional
+                        (strOption
+                           (long "email" <>
+                            metavar "ADDRESS" <>
+                            help "an email address with which to register an account"))
+                  <*> optional
+                        (strOption
+                           (long "terms" <>
+                            metavar "URL" <>
+                            help "the terms param of the registration request"))
+                  <*> switch
+                        (long "staging" <> help
+                                             "use staging servers instead of live servers (certificates will not be real!)")
 
 genKey :: String -> IO ()
 genKey privKeyFile = withOpenSSL $ do
@@ -107,19 +129,17 @@ readKeys privKeyFile = do
 data ChallengeRequest = ChallengeRequest { crUri :: String, crToken :: ByteString, crThumbToken :: ByteString }
 
 go :: CmdOpts -> IO ()
-go (CmdOpts privKeyFile domain challengeDir email termOverride staging) = do
-  let terms = fromMaybe defaultTerms termOverride
-      directoryUrl = if staging
-                       then stagingDirectoryUrl
-                       else liveDirectoryUrl
+go (CmdOpts privKeyFile domain challengeDir altDomainDir email termOverride staging) = do
+  let terms           = fromMaybe defaultTerms termOverride
+      directoryUrl    = if staging then stagingDirectoryUrl else liveDirectoryUrl
+      domainKeyFile   = domainDir </> "rsa.key"
+      domainCSRFile   = domainDir </> "csr.der"
+      domainCertFile  = domainDir </> "cert.der"
+      domainDir       = fromMaybe domain altDomainDir
 
   doesFileExist privKeyFile >>= flip unless (genKey privKeyFile)
 
-  let domainKeyFile = domain </> "rsa.key"
-      domainCSRFile = domain </> "csr.der"
-      domainCertFile = domain </> "cert.der"
-
-  doesDirectoryExist domain >>= flip unless (createDirectory domain)
+  doesDirectoryExist domain >>= flip unless (createDirectory domainDir)
   doesFileExist domainKeyFile >>= flip unless (genKey domainKeyFile)
 
   keys <- readKeys privKeyFile

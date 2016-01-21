@@ -1,15 +1,21 @@
 # Let's Encrypt ACME protocol
 
 ```
-Usage: acme-encrypt-exe --key FILE --domain DOMAIN --dir DIR [--email ADDRESS]
-                        [--terms URL] [--staging]
+Let's Encrypt! ACME client
+
+Usage: acme-encrypt-exe --key FILE --domain DOMAIN --challenge-dir DIR
+                        [--domain-dir DIR] [--email ADDRESS] [--terms URL]
+                        [--staging]
   This is a work in progress.
 
 Available options:
   -h,--help                Show this help text
   --key FILE               filename of your private RSA key
   --domain DOMAIN          the domain name to certify
-  --dir DIR                output directory for ACME challenges
+  --challenge-dir DIR      output directory for ACME challenges
+  --domain-dir DIR         directory in which to domain certificates and keys
+                           are stored; the default is to use the domain name as
+                           a directory name
   --email ADDRESS          an email address with which to register an account
   --terms URL              the terms param of the registration request
   --staging                use staging servers instead of live servers
