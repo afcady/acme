@@ -41,10 +41,11 @@ import           OpenSSL.EVP.PKey
 import           OpenSSL.EVP.Sign
 import           OpenSSL.PEM
 import           OpenSSL.RSA
+import           OpenSSL.X509.Request
 import           Options.Applicative        hiding (header)
 import qualified Options.Applicative        as Opt
 import           System.Directory
-import           System.Process             (readProcess)
+import           System.Process.ByteString
 
 stagingDirectoryUrl, liveDirectoryUrl :: String
 liveDirectoryUrl = "https://acme-v01.api.letsencrypt.org/directory"
@@ -77,12 +78,24 @@ cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <> help "filename 
                   <*> switch (long "staging" <> help "use staging servers instead of live servers (certificates will not be real!)")
 
 genKey :: String -> IO ()
-genKey privKeyFile = void $ readProcess "openssl" (words "genrsa -out" ++ [privKeyFile, "4096"]) ""
+genKey privKeyFile = withOpenSSL $ do
+    kp <- generateRSAKey' 4096 65537
+    pem <- writePKCS8PrivateKey kp Nothing
+    writeFile privKeyFile pem
 
-genReq :: String -> String -> String -> IO ()
-genReq privKeyFile domain out = void $ readProcess "openssl" (args privKeyFile domain out) ""
-  where
-    args k d o = words "req -new -sha256 -outform DER -key" ++ [k, "-subj", "/CN=" ++ d, "-out", o]
+genReq :: FilePath -> String -> IO ByteString
+genReq domainKeyFile domain = withOpenSSL $ do
+  (Keys priv pub) <- readKeys domainKeyFile
+  Just dig <- getDigestByName "SHA256"
+  req <- newX509Req
+  setSubjectName req [("CN", domain)]
+  setVersion req 0
+  setPublicKey req pub
+  signX509Req req priv (Just dig)
+  pem <- writeX509Req req ReqNewFormat
+  -- Sigh.  No DER support for X509 reqs in HsOpenSSL.
+  (_, o, _) <- readProcessWithExitCode "openssl" (words "req -outform der") (encodeUtf8 $ T.pack pem)
+  return o
 
 data Keys = Keys SomeKeyPair RSAPubKey
 readKeys :: String -> IO Keys
@@ -108,10 +121,12 @@ go (CmdOpts privKeyFile domain challengeDir email termOverride staging) = do
 
   doesDirectoryExist domain >>= flip unless (createDirectory domain)
   doesFileExist domainKeyFile >>= flip unless (genKey domainKeyFile)
-  doesFileExist domainCSRFile >>= flip unless (genReq domainKeyFile domain domainCSRFile)
+
+  keys <- readKeys privKeyFile
+
+  doesFileExist domainCSRFile >>= flip unless (genReq domainKeyFile domain >>= B.writeFile domainCSRFile)
 
   csrData <- B.readFile domainCSRFile
-  keys <- readKeys privKeyFile
 
   -- TODO: verify that challengeDir is writable before continuing.
 
