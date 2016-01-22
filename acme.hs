@@ -48,7 +48,6 @@ import           OpenSSL.X509.Request
 import           Options.Applicative        hiding (header)
 import qualified Options.Applicative        as Opt
 import           System.Directory
-import           System.Process.ByteString
 
 stagingDirectoryUrl, liveDirectoryUrl :: String
 liveDirectoryUrl = "https://acme-v01.api.letsencrypt.org/directory"
@@ -108,7 +107,7 @@ genKey privKeyFile = withOpenSSL $ do
     pem <- writePKCS8PrivateKey kp Nothing
     writeFile privKeyFile pem
 
-genReq :: FilePath -> String -> IO ByteString
+genReq :: FilePath -> String -> IO String
 genReq domainKeyFile domain = withOpenSSL $ do
   (Keys priv pub) <- readKeys domainKeyFile
   Just dig <- getDigestByName "SHA256"
@@ -117,10 +116,7 @@ genReq domainKeyFile domain = withOpenSSL $ do
   setVersion req 0
   setPublicKey req pub
   signX509Req req priv (Just dig)
-  pem <- writeX509Req req ReqNewFormat
-  -- Sigh.  No DER support for X509 reqs in HsOpenSSL.
-  (_, o, _) <- readProcessWithExitCode "openssl" (words "req -outform der") (encodeUtf8 $ T.pack pem)
-  return o
+  writeX509ReqDER req
 
 data Keys = Keys SomeKeyPair RSAPubKey
 readKeys :: String -> IO Keys

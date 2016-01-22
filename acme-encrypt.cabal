@@ -23,8 +23,8 @@ executable acme-encrypt-exe
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N -Wall
   build-depends:       base,
                        cryptonite, aeson, bytestring, base64-bytestring, SHA,
-                       text, HsOpenSSL, process, wreq, lens, lens-aeson,
-                       optparse-applicative, directory, mtl, process-extras, time
+                       text, HsOpenSSL, wreq, lens, lens-aeson,
+                       optparse-applicative, directory, mtl, time
                      -- , acme-encrypt
   default-language:    Haskell2010
 
