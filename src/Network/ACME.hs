@@ -6,6 +6,7 @@
 
 module Network.ACME (
     Keys(..),
+    readKeys,
     thumbprint,
     JWK(..),
     toStrict,
@@ -51,7 +52,13 @@ import           OpenSSL.PEM
 import           OpenSSL.RSA
 import           OpenSSL.X509.Request
 
-data Keys = Keys SomeKeyPair RSAPubKey
+data Keys = Keys RSAKeyPair RSAPubKey
+readKeys :: String -> IO (Maybe Keys)
+readKeys privKeyData = do
+  keypair :: SomeKeyPair <- readPrivateKey privKeyData PwTTY
+  let (priv :: Maybe RSAKeyPair) = toKeyPair keypair
+  pub :: Maybe RSAPubKey <- maybe (return Nothing) (fmap Just . rsaCopyPublic) priv
+  return $ Keys <$> priv <*> pub
 
 --------------------------------------------------------------------------------
 -- | Sign return a payload with a nonce-protected header.

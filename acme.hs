@@ -111,7 +111,7 @@ genKey privKeyFile = withOpenSSL $ do
 
 genReq :: FilePath -> String -> IO String
 genReq domainKeyFile domain = withOpenSSL $ do
-  (Keys priv pub) <- readKeys domainKeyFile
+  Just (Keys priv pub) <- readKeyFile domainKeyFile
   Just dig <- getDigestByName "SHA256"
   req <- newX509Req
   setSubjectName req [("CN", domain)]
@@ -120,11 +120,8 @@ genReq domainKeyFile domain = withOpenSSL $ do
   signX509Req req priv (Just dig)
   writeX509ReqDER req
 
-readKeys :: String -> IO Keys
-readKeys privKeyFile = do
-  priv <- readFile privKeyFile >>= flip readPrivateKey PwTTY
-  pub <- rsaCopyPublic $ fromMaybe (error "Error: failed to parse RSA key.") (toKeyPair priv :: Maybe RSAKeyPair)
-  return $ Keys priv pub
+readKeyFile :: FilePath -> IO (Maybe Keys)
+readKeyFile = readFile >=> readKeys
 
 data ChallengeRequest = ChallengeRequest { crUri :: String, crToken :: ByteString, crThumbToken :: ByteString }
 
@@ -147,7 +144,7 @@ go CmdOpts{..} = do
   doesDirectoryExist optDomain `otherwiseM` createDirectory domainDir
   doesFileExist domainKeyFile `otherwiseM` genKey domainKeyFile
 
-  keys <- readKeys privKeyFile
+  Just keys <- readKeyFile privKeyFile
 
   doesFileExist domainCSRFile `otherwiseM` genReq domainKeyFile optDomain >>= writeFile domainCSRFile
 
@@ -246,9 +243,6 @@ data Directory = Directory {
   _newReg     :: String
 }
 newtype Nonce = Nonce String
-
-runTest :: ACME b -> IO b
-runTest t = readKeys "rsa.key" >>= flip (runACME stagingDirectoryUrl) t
 
 getDirectory :: WS.Session -> String -> IO (Maybe (Directory, Nonce))
 getDirectory sess url = do
