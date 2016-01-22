@@ -2,30 +2,32 @@ name:                acme-encrypt
 version:             0.1.0.0
 synopsis:            Get a certificate using Let's Encrypt ACME protocol
 description:         Please see README.md
-homepage:            https://github.com/noteed/acme
-author:              Vo Minh Thu
+homepage:            https://github.com/afcady/acme
+author:              Vo Minh Thu, Andrew Cady
 maintainer:          noteed@gmail.com
-copyright:           2016 Vo Minh Thu
+copyright:           2016 Vo Minh Thu, Andrew Cady
 category:            Web
 build-type:          Simple
 -- extra-source-files:
 cabal-version:       >=1.10
 
--- library
---   hs-source-dirs:      src
---   exposed-modules:     Lib
---   build-depends:       base >= 4.7 && < 5
---   default-language:    Haskell2010
+library
+  hs-source-dirs:      src
+  exposed-modules:     Network.ACME
+  build-depends:       base >= 4.7 && < 5,
+                       cryptonite, aeson, bytestring, base64-bytestring, SHA,
+                       text, HsOpenSSL, wreq, lens, lens-aeson,
+                       mtl, time
+  default-language:    Haskell2010
 
-executable acme-encrypt-exe
+executable letsencrypt
   -- hs-source-dirs:      app
   main-is:             acme.hs
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N -Wall
-  build-depends:       base,
+  build-depends:       base, acme-encrypt,
                        cryptonite, aeson, bytestring, base64-bytestring, SHA,
                        text, HsOpenSSL, wreq, lens, lens-aeson,
                        optparse-applicative, directory, mtl, time
-                     -- , acme-encrypt
   default-language:    Haskell2010
 
 -- test-suite acme-encrypt-test
@@ -37,6 +39,6 @@ executable acme-encrypt-exe
 --   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
 --   default-language:    Haskell2010
 
--- source-repository head
---   type:     git
---   location: https://github.com/githubuser/acme-encrypt
+source-repository head
+  type:     git
+  location: https://github.com/afcady/acme
