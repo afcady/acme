@@ -131,6 +131,10 @@ readKeys privKeyFile = do
 
 data ChallengeRequest = ChallengeRequest { crUri :: String, crToken :: ByteString, crThumbToken :: ByteString }
 
+otherwiseM :: Monad m => m Bool -> m () -> m ()
+a `otherwiseM` b = a >>= flip unless b
+infixl 0 `otherwiseM`
+
 go :: CmdOpts -> IO ()
 go CmdOpts{..} = do
   let terms           = fromMaybe defaultTerms optTerms
@@ -141,21 +145,21 @@ go CmdOpts{..} = do
       domainDir       = fromMaybe optDomain optDomainDir
       privKeyFile     = optKeyFile
 
-  doesFileExist privKeyFile >>= flip unless (genKey privKeyFile)
+  doesFileExist privKeyFile `otherwiseM` genKey privKeyFile
 
-  doesDirectoryExist optDomain >>= flip unless (createDirectory domainDir)
-  doesFileExist domainKeyFile >>= flip unless (genKey domainKeyFile)
+  doesDirectoryExist optDomain `otherwiseM` createDirectory domainDir
+  doesFileExist domainKeyFile `otherwiseM` genKey domainKeyFile
 
   keys <- readKeys privKeyFile
 
-  doesFileExist domainCSRFile >>= flip unless (genReq domainKeyFile optDomain >>= B.writeFile domainCSRFile)
+  doesFileExist domainCSRFile `otherwiseM` genReq domainKeyFile optDomain >>= writeFile domainCSRFile
 
   csrData <- B.readFile domainCSRFile
 
   ensureWritable optChallengeDir "challenge directory"
   ensureWritable domainDir "domain directory"
 
-  canProvision optDomain optChallengeDir >>= flip unless (error "Error: cannot provision files to web server via challenge directory")
+  canProvision optDomain optChallengeDir `otherwiseM` error "Error: cannot provision files to web server via challenge directory"
 
   runACME directoryUrl keys $ do
     forM_ optEmail $ register terms >=> statusReport
@@ -170,6 +174,7 @@ go CmdOpts{..} = do
 
 (</>) :: String -> String -> String
 a </> b = a ++ "/" ++ b
+infixr 5 </>
 
 canProvision :: String -> FilePath -> IO Bool
 canProvision domain challengeDir = do
