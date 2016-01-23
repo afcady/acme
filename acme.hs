@@ -109,7 +109,7 @@ genKey privKeyFile = withOpenSSL $ do
     pem <- writePKCS8PrivateKey kp Nothing
     writeFile privKeyFile pem
 
-genReq :: FilePath -> String -> IO String
+genReq :: FilePath -> String -> IO LC.ByteString
 genReq domainKeyFile domain = withOpenSSL $ do
   Just (Keys priv pub) <- readKeyFile domainKeyFile
   Just dig <- getDigestByName "SHA256"
@@ -146,7 +146,7 @@ go CmdOpts{..} = do
 
   Just keys <- readKeyFile privKeyFile
 
-  doesFileExist domainCSRFile `otherwiseM` genReq domainKeyFile optDomain >>= writeFile domainCSRFile
+  doesFileExist domainCSRFile `otherwiseM` genReq domainKeyFile optDomain >>= LC.writeFile domainCSRFile
 
   csrData <- B.readFile domainCSRFile
 
