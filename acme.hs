@@ -117,8 +117,29 @@ genReq domainKeyFile domain = withOpenSSL $ do
   setSubjectName req [("CN", domain)]
   setVersion req 0
   setPublicKey req pub
+  when False $
+    -- This certificate seems well-formed ('openssl req' can parse it) but Let's Encrypt rejects it.
+    void $ addExtensions req
+             [ nidSubjectAltName %%% "DNS:" ++ domain
+             , nidKeyUsage %%% "critical,digitalSignature,keyEncipherment"
+             ]
+
+  -- This, on the other hand, is accepted:
+  void $ addExtensions req [nidSubjectAltName %%% "DNS:" ++ domain]
+
+  -- Trying to name other domains, though, results in this:
+  --
+  -- void $ addExtensions req [nidSubjectAltName %%% "DNS:" ++ domain ++ ", DNS:www." ++ domain]
+  --
+  -- urn:acme:error:unauthorized ---- Error creating new cert :: Authorizations
+  -- for these names not found or expired: www.fifty.childrenofmay.org
   signX509Req req priv (Just dig)
   writeX509ReqDER req
+  where
+    nidKeyUsage = 83
+    nidSubjectAltName = 85
+    (%%%) = (,)
+    infixr 0 %%%
 
 readKeyFile :: FilePath -> IO (Maybe Keys)
 readKeyFile = readFile >=> readKeys

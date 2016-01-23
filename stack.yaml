@@ -8,7 +8,7 @@ packages:
 - '.'
 - location:
     git: git@github.com:afcady/HSOpenSSL.git
-    commit: d120a92678da80cf8a992cc2b80c147730a05f83
+    commit: 11f5c83fbe44d6c1c496be4cc3017fd925ba26e2
   extra-dep: true
 
 # Packages to be pulled from upstream that are not in the resolver (e.g., acme-missiles-0.3)
