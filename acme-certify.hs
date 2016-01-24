@@ -1,7 +1,8 @@
-{-# LANGUAGE FlexibleContexts      #-}
-{-# LANGUAGE OverloadedStrings     #-}
-{-# LANGUAGE RecordWildCards       #-}
-{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards     #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 --------------------------------------------------------------------------------
 -- | Get a certificate from Let's Encrypt using the ACME protocol.
@@ -10,15 +11,15 @@
 
 module Main where
 
-import           Control.Monad
+import           BasePrelude
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy.Char8 as LC
 import           Data.Coerce
-import           Data.List
-import           Data.Maybe
-import           Data.String                (fromString)
-import           Network.ACME               (certify, readKeyFile, (</>), ensureWritableDir, canProvision, CSR(..))
-import           Network.ACME.Encoding      (Keys(..), toStrict)
+import           Network.ACME               (CSR (..), canProvision, certify,
+                                             ensureWritableDir, readKeyFile,
+                                             (</>))
+import           Network.ACME.Encoding      (Keys (..), toStrict)
+import           Network.URI
 import           OpenSSL
 import           OpenSSL.EVP.Digest
 import           OpenSSL.PEM
@@ -27,9 +28,8 @@ import           OpenSSL.X509.Request
 import           Options.Applicative        hiding (header)
 import qualified Options.Applicative        as Opt
 import           System.Directory
+import           Text.Domain.Validate       hiding (validate)
 import           Text.Email.Validate
-import           Text.Domain.Validate hiding (validate)
-import           Network.URI
 
 stagingDirectoryUrl, liveDirectoryUrl :: URI
 Just liveDirectoryUrl = parseAbsoluteURI "https://acme-v01.api.letsencrypt.org/directory"

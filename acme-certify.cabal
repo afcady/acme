@@ -24,7 +24,7 @@ executable acme-certify
   -- hs-source-dirs:      app
   main-is:             acme-certify.hs
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N -Wall
-  build-depends:       base, acme-certify,
+  build-depends:       base, base-prelude, acme-certify,
                        cryptonite, aeson, bytestring, base64-bytestring, SHA,
                        text, HsOpenSSL, optparse-applicative, time,
                        email-validate, network-uri, directory
