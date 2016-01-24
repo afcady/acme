@@ -1,5 +1,4 @@
 {-# LANGUAGE FlexibleContexts      #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE RecordWildCards       #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
@@ -11,27 +10,25 @@
 
 module Main where
 
-import           Control.Lens               hiding ((.=), each)
+import           Control.Lens               hiding (each, (.=))
 import           Control.Monad
 import           Control.Monad.RWS.Strict
-import           Crypto.Number.Serialize    (i2osp)
-import           Data.Aeson                 (ToJSON (..), Value, encode, object,
-                                             (.=))
+import           Data.Aeson                 (Value)
 import           Data.Aeson.Lens            hiding (key)
 import qualified Data.Aeson.Lens            as JSON
 import           Data.ByteString            (ByteString)
 import qualified Data.ByteString            as B
-import qualified Data.ByteString.Base64.URL as Base64
 import qualified Data.ByteString.Char8      as BC
 import qualified Data.ByteString.Lazy       as LB
 import qualified Data.ByteString.Lazy.Char8 as LC
 import           Data.Coerce
-import           Data.Digest.Pure.SHA       (bytestringDigest, sha256)
+import           Data.List
 import           Data.Maybe
 import           Data.String                (fromString)
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (decodeUtf8, encodeUtf8)
 import           Data.Time.Clock.POSIX      (getPOSIXTime)
+import           Network.ACME
 import           Network.Wreq               (Response, checkStatus, defaults,
                                              responseBody, responseHeader,
                                              responseStatus, statusCode,
@@ -40,18 +37,13 @@ import qualified Network.Wreq               as W
 import qualified Network.Wreq.Session       as WS
 import           OpenSSL
 import           OpenSSL.EVP.Digest
-import           OpenSSL.EVP.PKey
-import           OpenSSL.EVP.Sign
 import           OpenSSL.PEM
 import           OpenSSL.RSA
 import           OpenSSL.X509.Request
 import           Options.Applicative        hiding (header)
 import qualified Options.Applicative        as Opt
+import           Pipes
 import           System.Directory
-
-import Network.ACME
-import Data.List
-import Pipes
 
 stagingDirectoryUrl, liveDirectoryUrl :: String
 liveDirectoryUrl = "https://acme-v01.api.letsencrypt.org/directory"
@@ -129,14 +121,11 @@ genReq domainKeyFile domains@(domain:_) = withOpenSSL $ do
   setSubjectName req [("CN", domain)]
   setVersion req 0
   setPublicKey req pub
-  void $ addExtensions req [nidSubjectAltName %%% intercalate ", " (map ("DNS:" ++) domains)]
+  void $ addExtensions req [(nidSubjectAltName, intercalate ", " (map ("DNS:" ++) domains))]
   signX509Req req priv (Just dig)
   writeX509ReqDER req
   where
-    nidKeyUsage = 83
     nidSubjectAltName = 85
-    (%%%) = (,)
-    infixr 0 %%%
 
 readKeyFile :: FilePath -> IO (Maybe Keys)
 readKeyFile = readFile >=> readKeys

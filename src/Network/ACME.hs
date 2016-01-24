@@ -1,5 +1,3 @@
-{-# LANGUAGE FlexibleContexts      #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE RecordWildCards       #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
@@ -17,47 +15,30 @@ module Network.ACME (
     signPayload,
     ) where
 
-import           Control.Lens               hiding ((.=))
-import           Control.Monad
-import           Control.Monad.RWS.Strict
 import           Crypto.Number.Serialize    (i2osp)
-import           Data.Aeson                 (ToJSON (..), Value, encode, object,
-                                             (.=))
-import           Data.Aeson.Lens            hiding (key)
-import qualified Data.Aeson.Lens            as JSON
+import           Data.Aeson                 (ToJSON (..), encode, object, (.=))
 import           Data.ByteString            (ByteString)
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Base64.URL as Base64
 import qualified Data.ByteString.Char8      as BC
 import qualified Data.ByteString.Lazy       as LB
 import qualified Data.ByteString.Lazy.Char8 as LC
-import           Data.Coerce
 import           Data.Digest.Pure.SHA       (bytestringDigest, sha256)
 import           Data.Maybe
-import           Data.String                (fromString)
-import qualified Data.Text                  as T
-import           Data.Text.Encoding         (decodeUtf8, encodeUtf8)
-import           Data.Time.Clock.POSIX      (getPOSIXTime)
-import           Network.Wreq               (Response, checkStatus, defaults,
-                                             responseBody, responseHeader,
-                                             responseStatus, statusCode,
-                                             statusMessage)
-import qualified Network.Wreq               as W
-import qualified Network.Wreq.Session       as WS
+import           Data.Text.Encoding         (decodeUtf8)
 import           OpenSSL
 import           OpenSSL.EVP.Digest
 import           OpenSSL.EVP.PKey
 import           OpenSSL.EVP.Sign
 import           OpenSSL.PEM
 import           OpenSSL.RSA
-import           OpenSSL.X509.Request
 
 data Keys = Keys RSAKeyPair RSAPubKey
 readKeys :: String -> IO (Maybe Keys)
 readKeys privKeyData = do
   keypair :: SomeKeyPair <- readPrivateKey privKeyData PwTTY
   let (priv :: Maybe RSAKeyPair) = toKeyPair keypair
-  pub :: Maybe RSAPubKey <- maybe (return Nothing) (fmap Just . rsaCopyPublic) priv
+  pub <- maybe (return Nothing) (fmap Just . rsaCopyPublic) priv
   return $ Keys <$> priv <*> pub
 
 --------------------------------------------------------------------------------
