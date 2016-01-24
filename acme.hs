@@ -44,8 +44,9 @@ import           Options.Applicative        hiding (header)
 import qualified Options.Applicative        as Opt
 import           Pipes
 import           System.Directory
-import Text.Email.Validate
-import Network.URI
+import           Text.Email.Validate
+import           Text.Domain.Validate hiding (validate)
+import           Network.URI
 
 stagingDirectoryUrl, liveDirectoryUrl :: URI
 Just liveDirectoryUrl = parseAbsoluteURI "https://acme-v01.api.letsencrypt.org/directory"
@@ -114,16 +115,16 @@ genKey privKeyFile = withOpenSSL $ do
     pem <- writePKCS8PrivateKey kp Nothing
     writeFile privKeyFile pem
 
-genReq :: FilePath -> [String] -> IO LC.ByteString
+genReq :: FilePath -> [DomainName] -> IO LC.ByteString
 genReq _ [] = error "genReq called with zero domains"
 genReq domainKeyFile domains@(domain:_) = withOpenSSL $ do
   Just (Keys priv pub) <- readKeyFile domainKeyFile
   Just dig <- getDigestByName "SHA256"
   req <- newX509Req
-  setSubjectName req [("CN", domain)]
+  setSubjectName req [("CN", show domain)]
   setVersion req 0
   setPublicKey req pub
-  void $ addExtensions req [(nidSubjectAltName, intercalate ", " (map ("DNS:" ++) domains))]
+  void $ addExtensions req [(nidSubjectAltName, intercalate ", " (map (("DNS:" ++) . show) domains))]
   signX509Req req priv (Just dig)
   writeX509ReqDER req
   where
@@ -147,7 +148,7 @@ go CmdOpts { .. } = do
       domainCertFile  = domainDir </> "cert.der"
       domainDir       = fromMaybe (head optDomains) optDomainDir
       privKeyFile     = optKeyFile
-      requestDomains  = optDomains
+      requestDomains  = fromMaybe (error "invalid domain name") $ sequence $ domainName . fromString <$> optDomains
 
   doesFileExist privKeyFile `otherwiseM` genKey privKeyFile
 
@@ -156,20 +157,19 @@ go CmdOpts { .. } = do
 
   Just keys <- readKeyFile privKeyFile
 
-  ensureWritable optChallengeDir "challenge directory"
-  ensureWritable domainDir "domain directory"
+  challengeDir <- ensureWritableDir optChallengeDir "challenge directory"
+  void $ ensureWritableDir domainDir "domain directory"
 
-  forM_ requestDomains $ canProvision optChallengeDir >=> (`unless` error "Error: cannot provision files to web server via challenge directory")
+  forM_ requestDomains $ canProvision challengeDir >=> (`unless` error "Error: cannot provision files to web server via challenge directory")
 
   csrData <- CSR . toStrict <$> genReq domainKeyFile requestDomains
   B.writeFile domainCSRFile (coerce csrData)
 
   let email = either (error . ("Error: invalid email address: " ++)) id . validate . fromString <$> optEmail
 
-  certify directoryUrl keys email terms requestDomains optChallengeDir csrData domainCertFile
+  certify directoryUrl keys email terms requestDomains challengeDir csrData domainCertFile
 
-type DomainName = String -- TODO: use validated type
-certify :: URI -> Keys -> Maybe EmailAddress -> URI -> [DomainName] -> String -> CSR -> FilePath -> IO ()
+certify :: URI -> Keys -> Maybe EmailAddress -> URI -> [DomainName] -> WritableDir -> CSR -> FilePath -> IO ()
 certify directoryUrl keys optEmail terms requestDomains optChallengeDir csrData domainCertFile =
 
   runACME directoryUrl keys $ do
@@ -180,7 +180,7 @@ certify directoryUrl keys optEmail terms requestDomains optChallengeDir csrData 
         consumer :: Consumer ChallengeRequest ACME ()
         consumer = forever $ await >>= consume1
         consume1 (ChallengeRequest nextUri token thumbtoken) = do
-          lift $ liftIO $ BC.writeFile (optChallengeDir </> BC.unpack token) thumbtoken
+          lift $ liftIO $ BC.writeFile (coerce optChallengeDir </> BC.unpack token) thumbtoken
           notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
 
     runEffect $ producer >-> consumer
@@ -193,21 +193,24 @@ newtype CSR = CSR ByteString
 a </> b = a ++ "/" ++ b
 infixr 5 </>
 
-canProvision :: FilePath -> String -> IO Bool
+canProvision :: WritableDir -> DomainName -> IO Bool
 canProvision challengeDir domain = do
   randomish <- fromString . show <$> getPOSIXTime
 
-  let absFile = challengeDir </> relFile
+  let absFile = coerce challengeDir </> relFile
       relFile = ".test." ++ show randomish
 
   LC.writeFile absFile randomish
-  r <- W.get $ "http://" ++ domain </> ".well-known/acme-challenge" </> relFile
+  r <- W.get $ "http://" ++ show domain </> ".well-known/acme-challenge" </> relFile
   removeFile absFile
   return $ r ^. responseBody == randomish
 
 
-ensureWritable :: FilePath -> String -> IO ()
-ensureWritable file name = (writable <$> getPermissions file) >>= flip unless (err name)
+newtype WritableDir = WritableDir String
+ensureWritableDir :: FilePath -> String -> IO WritableDir
+ensureWritableDir file name = do
+  (writable <$> getPermissions file) >>= flip unless (err name)
+  return $ WritableDir file
   where err n = error $ "Error: " ++ n ++ " is not writable"
 
 extractCR :: MonadReader Env m => Response LC.ByteString -> m ChallengeRequest
@@ -277,8 +280,8 @@ getDirectory sess url = do
 register :: URI -> EmailAddress -> ACME (Response LC.ByteString)
 register terms email = sendPayload _newReg (registration email (show terms))
 
-challengeRequest :: (MonadIO m, MonadState Nonce m, MonadReader Env m) => String -> m (Response LC.ByteString)
-challengeRequest domain = sendPayload _newAuthz (authz domain)
+challengeRequest :: (MonadIO m, MonadState Nonce m, MonadReader Env m) => DomainName -> m (Response LC.ByteString)
+challengeRequest = sendPayload _newAuthz . authz . show
 
 statusLine :: Response body -> String
 statusLine r =  (r ^. responseStatus . statusCode . to show) ++ " " ++ r ^. responseStatus . statusMessage . to (T.unpack . decodeUtf8)

@@ -10,6 +10,10 @@ packages:
     git: git@github.com:afcady/HSOpenSSL.git
     commit: 11f5c83fbe44d6c1c496be4cc3017fd925ba26e2
   extra-dep: true
+- location:
+    git: git@github.com:afcady/email-validate-hs.git
+    commit: faf9c1bbb2051de314bce4c159d4dbdbc768b629
+  extra-dep: true
 
 # Packages to be pulled from upstream that are not in the resolver (e.g., acme-missiles-0.3)
 extra-deps: []
