@@ -11,7 +11,7 @@
 
 module Main where
 
-import           Control.Lens               hiding ((.=))
+import           Control.Lens               hiding ((.=), each)
 import           Control.Monad
 import           Control.Monad.RWS.Strict
 import           Crypto.Number.Serialize    (i2osp)
@@ -50,6 +50,8 @@ import qualified Options.Applicative        as Opt
 import           System.Directory
 
 import Network.ACME
+import Data.List
+import Pipes
 
 stagingDirectoryUrl, liveDirectoryUrl :: String
 liveDirectoryUrl = "https://acme-v01.api.letsencrypt.org/directory"
@@ -59,11 +61,14 @@ main :: IO ()
 main = execParser opts >>= go
   where
     opts = info (helper <*> cmdopts) (fullDesc <> progDesc detailedDescription <> Opt.header "Let's Encrypt! ACME client")
-    detailedDescription = "This is a work in progress."
+    detailedDescription = unwords
+                            [ "This program will generate a signed TLS certificate"
+                            , "using the ACME protocol and the free Let's Encrypt! CA."
+                            ]
 
 data CmdOpts = CmdOpts {
       optKeyFile      :: String,
-      optDomain       :: String,
+      optDomains      :: [String],
       optChallengeDir :: String,
       optDomainDir    :: Maybe String,
       optEmail        :: Maybe String,
@@ -75,33 +80,39 @@ defaultTerms :: String
 defaultTerms = "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
 
 cmdopts :: Parser CmdOpts
-cmdopts = CmdOpts <$> strOption
-                        (long "key" <> metavar "FILE" <> help "filename of your private RSA key")
-                  <*> strOption
-                        (long "domain" <> metavar "DOMAIN" <> help "the domain name to certify")
-                  <*> strOption
-                        (long "challenge-dir" <>
-                         metavar "DIR" <>
-                         help "output directory for ACME challenges")
+cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <>
+                                 help "filename of your private RSA key")
+                  <*> some
+                        (strOption
+                           (long "domain" <>
+                            metavar "DOMAIN" <>
+                            help
+                              (unwords
+                                 [ "the domain name(s) to certify;"
+                                 , "specify more than once for a multi-domain certificate"
+                                 ])))
+                  <*> strOption (long "challenge-dir" <> metavar "DIR" <>
+                                 help "output directory for ACME challenges")
                   <*> optional
                         (strOption
                            (long "domain-dir" <>
                             metavar "DIR" <>
                             help
-                              "directory in which to domain certificates and keys are stored; the default is to use the domain name as a directory name"))
+                              (unwords
+                                 [ "directory in which to domain certificates and keys are stored;"
+                                 , "the default is to use the (first) domain name as a directory name"
+                                 ])))
                   <*> optional
-                        (strOption
-                           (long "email" <>
-                            metavar "ADDRESS" <>
-                            help "an email address with which to register an account"))
-                  <*> optional
-                        (strOption
-                           (long "terms" <>
-                            metavar "URL" <>
-                            help "the terms param of the registration request"))
+                        (strOption (long "email" <> metavar "ADDRESS" <>
+                                    help "an email address with which to register an account"))
+                  <*> optional (strOption (long "terms" <> metavar "URL" <>
+                                           help "the terms param of the registration request"))
                   <*> switch
                         (long "staging" <> help
-                                             "use staging servers instead of live servers (certificates will not be real!)")
+                                             (unwords
+                                                [ "use staging servers instead of live servers"
+                                                , "(generated certificates will not be trusted!)"
+                                                ]))
 
 genKey :: String -> IO ()
 genKey privKeyFile = withOpenSSL $ do
@@ -109,30 +120,16 @@ genKey privKeyFile = withOpenSSL $ do
     pem <- writePKCS8PrivateKey kp Nothing
     writeFile privKeyFile pem
 
-genReq :: FilePath -> String -> IO LC.ByteString
-genReq domainKeyFile domain = withOpenSSL $ do
+genReq :: FilePath -> [String] -> IO LC.ByteString
+genReq _ [] = error "genReq called with zero domains"
+genReq domainKeyFile domains@(domain:_) = withOpenSSL $ do
   Just (Keys priv pub) <- readKeyFile domainKeyFile
   Just dig <- getDigestByName "SHA256"
   req <- newX509Req
   setSubjectName req [("CN", domain)]
   setVersion req 0
   setPublicKey req pub
-  when False $
-    -- This certificate seems well-formed ('openssl req' can parse it) but Let's Encrypt rejects it.
-    void $ addExtensions req
-             [ nidSubjectAltName %%% "DNS:" ++ domain
-             , nidKeyUsage %%% "critical,digitalSignature,keyEncipherment"
-             ]
-
-  -- This, on the other hand, is accepted:
-  void $ addExtensions req [nidSubjectAltName %%% "DNS:" ++ domain]
-
-  -- Trying to name other domains, though, results in this:
-  --
-  -- void $ addExtensions req [nidSubjectAltName %%% "DNS:" ++ domain ++ ", DNS:www." ++ domain]
-  --
-  -- urn:acme:error:unauthorized ---- Error creating new cert :: Authorizations
-  -- for these names not found or expired: www.fifty.childrenofmay.org
+  void $ addExtensions req [nidSubjectAltName %%% intercalate ", " (map ("DNS:" ++) domains)]
   signX509Req req priv (Just dig)
   writeX509ReqDER req
   where
@@ -151,39 +148,44 @@ a `otherwiseM` b = a >>= flip unless b
 infixl 0 `otherwiseM`
 
 go :: CmdOpts -> IO ()
-go CmdOpts{..} = do
+go CmdOpts { .. } = do
   let terms           = fromMaybe defaultTerms optTerms
       directoryUrl    = if optStaging then stagingDirectoryUrl else liveDirectoryUrl
       domainKeyFile   = domainDir </> "rsa.key"
       domainCSRFile   = domainDir </> "csr.der"
       domainCertFile  = domainDir </> "cert.der"
-      domainDir       = fromMaybe optDomain optDomainDir
+      domainDir       = fromMaybe (head optDomains) optDomainDir
       privKeyFile     = optKeyFile
+      requestDomains  = optDomains
 
   doesFileExist privKeyFile `otherwiseM` genKey privKeyFile
 
-  doesDirectoryExist optDomain `otherwiseM` createDirectory domainDir
+  doesDirectoryExist domainDir `otherwiseM` createDirectory domainDir
   doesFileExist domainKeyFile `otherwiseM` genKey domainKeyFile
 
   Just keys <- readKeyFile privKeyFile
 
-  doesFileExist domainCSRFile `otherwiseM` genReq domainKeyFile optDomain >>= LC.writeFile domainCSRFile
+  doesFileExist domainCSRFile `otherwiseM` genReq domainKeyFile requestDomains >>= LC.writeFile domainCSRFile
 
   csrData <- B.readFile domainCSRFile
 
   ensureWritable optChallengeDir "challenge directory"
   ensureWritable domainDir "domain directory"
 
-  canProvision optDomain optChallengeDir `otherwiseM` error "Error: cannot provision files to web server via challenge directory"
+  forM_ requestDomains $ canProvision optChallengeDir >=> (`unless` error "Error: cannot provision files to web server via challenge directory")
 
   runACME directoryUrl keys $ do
     forM_ optEmail $ register terms >=> statusReport
 
-    (ChallengeRequest nextUri token thumbtoken) <- challengeRequest optDomain >>= statusReport >>= extractCR
+    let producer :: Producer ChallengeRequest ACME ()
+        producer = for (each requestDomains) $ challengeRequest >=> statusReport >=> extractCR >=> yield
+        consumer :: Consumer ChallengeRequest ACME ()
+        consumer = forever $ await >>= consume1
+        consume1 (ChallengeRequest nextUri token thumbtoken) = do
+          lift $ liftIO $ BC.writeFile (optChallengeDir </> BC.unpack token) thumbtoken
+          notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
 
-    liftIO $ BC.writeFile (optChallengeDir </> BC.unpack token) thumbtoken
-
-    notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
+    runEffect $ producer >-> consumer
 
     retrieveCert csrData >>= statusReport >>= saveCert domainCertFile
 
@@ -191,8 +193,8 @@ go CmdOpts{..} = do
 a </> b = a ++ "/" ++ b
 infixr 5 </>
 
-canProvision :: String -> FilePath -> IO Bool
-canProvision domain challengeDir = do
+canProvision :: FilePath -> String -> IO Bool
+canProvision challengeDir domain = do
   randomish <- fromString . show <$> getPOSIXTime
 
   let absFile = challengeDir </> relFile
@@ -251,7 +253,7 @@ notifyChallenge crUri thumbtoken = sendPayload (const crUri) (challenge thumbtok
 
 data Env = Env { getDir :: Directory, getKeys :: Keys, getSession :: WS.Session }
 
-type ACME a = RWST Env () Nonce IO a
+type ACME = RWST Env () Nonce IO
 runACME :: String -> Keys -> ACME a -> IO a
 runACME url keys f = WS.withSession $ \sess -> do
   Just (dir, nonce) <- getDirectory sess url

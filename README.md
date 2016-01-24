@@ -3,23 +3,25 @@
 ```
 Let's Encrypt! ACME client
 
-Usage: acme-encrypt-exe --key FILE --domain DOMAIN --challenge-dir DIR
-                        [--domain-dir DIR] [--email ADDRESS] [--terms URL]
-                        [--staging]
-  This is a work in progress.
+Usage: acme-certify --key FILE --domain DOMAIN --challenge-dir DIR
+                    [--domain-dir DIR] [--email ADDRESS] [--terms URL]
+                    [--staging]
+  This program will generate a signed TLS certificate using the ACME protocol
+  and the free Let's Encrypt! CA.
 
 Available options:
   -h,--help                Show this help text
   --key FILE               filename of your private RSA key
-  --domain DOMAIN          the domain name to certify
+  --domain DOMAIN          the domain name(s) to certify; specify more than once
+                           for a multi-domain certificate
   --challenge-dir DIR      output directory for ACME challenges
   --domain-dir DIR         directory in which to domain certificates and keys
-                           are stored; the default is to use the domain name as
-                           a directory name
+                           are stored; the default is to use the (first) domain
+                           name as a directory name
   --email ADDRESS          an email address with which to register an account
   --terms URL              the terms param of the registration request
   --staging                use staging servers instead of live servers
-                           (certificates will not be real!)
+                           (generated certificates will not be trusted!)
 ```
 
 This is a simple Haskell script to obtain a certificate from [Let's
