@@ -93,12 +93,12 @@ extractCR r = do
                       (filtered . has $ ix "type" . only "http-01")
 
       token = r ^?! httpChallenge . JSON.key "token" . _String . to encodeUtf8
-      crUri = r ^?! httpChallenge . JSON.key "uri" . _String . to T.unpack
+      nextU = r ^?! httpChallenge . JSON.key "uri" . _String . to T.unpack
 
       thumb = thumbprint (JWK (rsaE pub) "RSA" (rsaN pub))
       thumbtoken = toStrict (LB.fromChunks [token, ".", thumb])
 
-  return $ ChallengeRequest crUri token thumbtoken
+  return $ ChallengeRequest nextU token thumbtoken
 
 ncErrorReport :: (Show body, AsValue body, MonadIO m) => Response body -> m ()
 ncErrorReport r =
@@ -121,7 +121,7 @@ retrieveCert :: (MonadReader Env m, MonadState Nonce m, MonadIO m) => CSR -> m (
 retrieveCert input = sendPayload _newCert (csr $ coerce input)
 
 notifyChallenge :: (MonadReader Env m, MonadState Nonce m, MonadIO m) => String -> ByteString -> m (Response LC.ByteString)
-notifyChallenge crUri thumbtoken = sendPayload (const crUri) (challenge thumbtoken)
+notifyChallenge uri thumbtoken = sendPayload (const uri) (challenge thumbtoken)
 
 data Env = Env { getDir :: Directory, getKeys :: Keys, getSession :: WS.Session }
 

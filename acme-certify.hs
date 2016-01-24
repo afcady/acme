@@ -91,10 +91,10 @@ cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <>
 
 genKey :: FilePath -> IO String
 genKey privKeyFile = withOpenSSL $ do
-    kp <- generateRSAKey' 4096 65537
-    pem <- writePKCS8PrivateKey kp Nothing
-    writeFile privKeyFile pem
-    return pem
+  kp <- generateRSAKey' 4096 65537
+  pem <- writePKCS8PrivateKey kp Nothing
+  writeFile privKeyFile pem
+  return pem
 
 genReq :: Keys -> [DomainName] -> IO CSR
 genReq _ [] = error "genReq called with zero domains"
