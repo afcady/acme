@@ -167,10 +167,12 @@ go CmdOpts { .. } = do
 
   let email = either (error . ("Error: invalid email address: " ++)) id . validate . fromString <$> optEmail
 
-  certify directoryUrl keys email terms requestDomains challengeDir csrData domainCertFile
+  certificate <- certify directoryUrl keys email terms requestDomains challengeDir csrData
 
-certify :: URI -> Keys -> Maybe EmailAddress -> URI -> [DomainName] -> WritableDir -> CSR -> FilePath -> IO ()
-certify directoryUrl keys optEmail terms requestDomains optChallengeDir csrData domainCertFile =
+  either (error . ("Error: " ++)) (LC.writeFile domainCertFile) certificate
+
+certify :: URI -> Keys -> Maybe EmailAddress -> URI -> [DomainName] -> WritableDir -> CSR -> IO (Either String LC.ByteString)
+certify directoryUrl keys optEmail terms requestDomains optChallengeDir csrData =
 
   runACME directoryUrl keys $ do
     forM_ optEmail $ register terms >=> statusReport
@@ -185,7 +187,7 @@ certify directoryUrl keys optEmail terms requestDomains optChallengeDir csrData 
 
     runEffect $ producer >-> consumer
 
-    retrieveCert csrData >>= statusReport >>= saveCert domainCertFile
+    retrieveCert csrData >>= statusReport <&> checkCertResponse
 
 newtype CSR = CSR ByteString
 
@@ -237,14 +239,14 @@ ncErrorReport r =
     putStrLn "Unexpected response to challenge-response request:"
     print r
 
-saveCert :: MonadIO m => FilePath -> Response LC.ByteString -> m ()
-saveCert domainCertFile r =
+checkCertResponse :: Response LC.ByteString -> Either String LC.ByteString
+checkCertResponse r =
   if isSuccess $ r ^. responseStatus . statusCode
-    then liftIO $ LC.writeFile domainCertFile $ r ^. responseBody
-    else liftIO $ do
+    then Right $ r ^. responseBody
+    else
       let (summary, details) = (k "type", k "detail")
           k x = r ^?! responseBody . JSON.key x . _String . to T.unpack
-      liftIO $ putStrLn $ summary ++ "  ----  " ++ details
+      in Left $ summary ++ "  ----  " ++ details
   where
     isSuccess n = n >= 200 && n <= 300
 
