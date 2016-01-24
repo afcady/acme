@@ -2,7 +2,7 @@
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Network.ACME (
+module Network.ACME.Encoding (
     Keys(..),
     readKeys,
     thumbprint,

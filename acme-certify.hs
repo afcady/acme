@@ -28,7 +28,7 @@ import           Data.String                (fromString)
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (decodeUtf8, encodeUtf8)
 import           Data.Time.Clock.POSIX      (getPOSIXTime)
-import           Network.ACME
+import           Network.ACME.Encoding
 import           Network.Wreq               (Response, checkStatus, defaults,
                                              responseBody, responseHeader,
                                              responseStatus, statusCode,
