@@ -45,10 +45,11 @@ import qualified Options.Applicative        as Opt
 import           Pipes
 import           System.Directory
 import Text.Email.Validate
+import Network.URI
 
-stagingDirectoryUrl, liveDirectoryUrl :: String
-liveDirectoryUrl = "https://acme-v01.api.letsencrypt.org/directory"
-stagingDirectoryUrl = "https://acme-staging.api.letsencrypt.org/directory"
+stagingDirectoryUrl, liveDirectoryUrl :: URI
+Just liveDirectoryUrl = parseAbsoluteURI "https://acme-v01.api.letsencrypt.org/directory"
+Just stagingDirectoryUrl = parseAbsoluteURI "https://acme-staging.api.letsencrypt.org/directory"
 
 main :: IO ()
 main = execParser opts >>= go
@@ -69,8 +70,8 @@ data CmdOpts = CmdOpts {
       optStaging      :: Bool
 }
 
-defaultTerms :: String
-defaultTerms = "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
+defaultTerms :: URI
+Just defaultTerms = parseAbsoluteURI "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
 
 cmdopts :: Parser CmdOpts
 cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <>
@@ -139,7 +140,7 @@ infixl 0 `otherwiseM`
 
 go :: CmdOpts -> IO ()
 go CmdOpts { .. } = do
-  let terms           = fromMaybe defaultTerms optTerms
+  let terms           = fromMaybe defaultTerms (join $ parseAbsoluteURI <$> optTerms)
       directoryUrl    = if optStaging then stagingDirectoryUrl else liveDirectoryUrl
       domainKeyFile   = domainDir </> "rsa.key"
       domainCSRFile   = domainDir </> "csr.der"
@@ -167,7 +168,8 @@ go CmdOpts { .. } = do
 
   certify directoryUrl keys email terms requestDomains optChallengeDir csrData domainCertFile
 
-certify :: String -> Keys -> Maybe EmailAddress -> String -> [String] -> String -> CSR -> FilePath -> IO ()
+type DomainName = String -- TODO: use validated type
+certify :: URI -> Keys -> Maybe EmailAddress -> URI -> [DomainName] -> String -> CSR -> FilePath -> IO ()
 certify directoryUrl keys optEmail terms requestDomains optChallengeDir csrData domainCertFile =
 
   runACME directoryUrl keys $ do
@@ -252,9 +254,9 @@ notifyChallenge crUri thumbtoken = sendPayload (const crUri) (challenge thumbtok
 data Env = Env { getDir :: Directory, getKeys :: Keys, getSession :: WS.Session }
 
 type ACME = RWST Env () Nonce IO
-runACME :: String -> Keys -> ACME a -> IO a
+runACME :: URI -> Keys -> ACME a -> IO a
 runACME url keys f = WS.withSession $ \sess -> do
-  Just (dir, nonce) <- getDirectory sess url
+  Just (dir, nonce) <- getDirectory sess (show url)
   fst <$> evalRWST f (Env dir keys sess) nonce
 
 data Directory = Directory {
@@ -272,8 +274,8 @@ getDirectory sess url = do
       k x   = r ^? responseBody . JSON.key x . _String . to T.unpack
   return $ (,) <$> (Directory <$> k "new-cert" <*> k "new-authz" <*> k "revoke-cert" <*> k "new-reg") <*> nonce
 
-register :: String -> EmailAddress -> ACME (Response LC.ByteString)
-register terms email = sendPayload _newReg (registration email terms)
+register :: URI -> EmailAddress -> ACME (Response LC.ByteString)
+register terms email = sendPayload _newReg (registration email (show terms))
 
 challengeRequest :: (MonadIO m, MonadState Nonce m, MonadReader Env m) => String -> m (Response LC.ByteString)
 challengeRequest domain = sendPayload _newAuthz (authz domain)

@@ -28,7 +28,7 @@ executable acme-certify
                        cryptonite, aeson, bytestring, base64-bytestring, SHA,
                        text, HsOpenSSL, wreq, lens, lens-aeson,
                        optparse-applicative, directory, mtl, time, pipes,
-                       email-validate
+                       email-validate, network-uri
   default-language:    Haskell2010
 
 -- test-suite acme-certify-test
