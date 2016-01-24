@@ -12,7 +12,7 @@ packages:
   extra-dep: true
 - location:
     git: git@github.com:afcady/email-validate-hs.git
-    commit: faf9c1bbb2051de314bce4c159d4dbdbc768b629
+    commit: 6b3d6d232fcddb4f398f7118251a951e26f7b81b
   extra-dep: true
 
 # Packages to be pulled from upstream that are not in the resolver (e.g., acme-missiles-0.3)

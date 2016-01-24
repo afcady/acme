@@ -32,7 +32,6 @@ import           Network.Wreq               (Response, checkStatus, defaults,
 import qualified Network.Wreq               as W
 import qualified Network.Wreq.Session       as WS
 import           OpenSSL.RSA
-import           Pipes
 import           System.Directory
 import           Text.Email.Validate
 import           Text.Domain.Validate hiding (validate)
@@ -44,15 +43,11 @@ certify directoryUrl keys optEmail terms requestDomains optChallengeDir csrData 
   runACME directoryUrl keys $ do
     forM_ optEmail $ register terms >=> statusReport
 
-    let producer :: Producer ChallengeRequest ACME ()
-        producer = for (each requestDomains) $ challengeRequest >=> statusReport >=> extractCR >=> yield
-        consumer :: Consumer ChallengeRequest ACME ()
-        consumer = forever $ await >>= consume1
-        consume1 (ChallengeRequest nextUri token thumbtoken) = do
-          lift $ liftIO $ BC.writeFile (coerce optChallengeDir </> BC.unpack token) thumbtoken
+    let performChallenge (ChallengeRequest nextUri token thumbtoken) = do
+          liftIO $ BC.writeFile (coerce optChallengeDir </> BC.unpack token) thumbtoken
           notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
 
-    runEffect $ producer >-> consumer
+    forM_ requestDomains $ challengeRequest >=> statusReport >=> extractCR >=> performChallenge
 
     retrieveCert csrData >>= statusReport <&> checkCertResponse
 
@@ -71,6 +66,9 @@ ensureWritableDir file name = do
 a </> b = a ++ "/" ++ b
 infixr 5 </>
 
+domainToString :: DomainName -> String
+domainToString = T.unpack . decodeUtf8 . Text.Domain.Validate.toByteString
+
 canProvision :: WritableDir -> DomainName -> IO Bool
 canProvision challengeDir domain = do
   randomish <- fromString . show <$> getPOSIXTime
@@ -79,7 +77,7 @@ canProvision challengeDir domain = do
       relFile = ".test." ++ show randomish
 
   LC.writeFile absFile randomish
-  r <- W.get $ "http://" ++ show domain </> ".well-known/acme-challenge" </> relFile
+  r <- W.get $ "http://" ++ domainToString domain </> ".well-known/acme-challenge" </> relFile
   removeFile absFile
   return $ r ^. responseBody == randomish
 
@@ -152,7 +150,7 @@ register :: URI -> EmailAddress -> ACME (Response LC.ByteString)
 register terms email = sendPayload _newReg (registration email (show terms))
 
 challengeRequest :: (MonadIO m, MonadState Nonce m, MonadReader Env m) => DomainName -> m (Response LC.ByteString)
-challengeRequest = sendPayload _newAuthz . authz . show
+challengeRequest = sendPayload _newAuthz . authz . domainToString
 
 statusLine :: Response body -> String
 statusLine r =  (r ^. responseStatus . statusCode . to show) ++ " " ++ r ^. responseStatus . statusMessage . to (T.unpack . decodeUtf8)

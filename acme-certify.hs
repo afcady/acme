@@ -14,7 +14,7 @@ module Main where
 import           BasePrelude
 import qualified Data.ByteString.Lazy.Char8 as LC
 import           Network.ACME               (CSR (..), canProvision, certify,
-                                             ensureWritableDir, (</>))
+                                             ensureWritableDir, (</>), domainToString)
 import           Network.ACME.Encoding      (Keys (..), readKeys, toStrict)
 import           Network.URI
 import           OpenSSL
@@ -101,10 +101,10 @@ genReq _ [] = error "genReq called with zero domains"
 genReq (Keys priv pub) domains@(domain:_) = withOpenSSL $ do
   Just dig <- getDigestByName "SHA256"
   req <- newX509Req
-  setSubjectName req [("CN", show domain)]
+  setSubjectName req [("CN", domainToString domain)]
   setVersion req 0
   setPublicKey req pub
-  void $ addExtensions req [(nidSubjectAltName, intercalate ", " (map (("DNS:" ++) . show) domains))]
+  void $ addExtensions req [(nidSubjectAltName, intercalate ", " (map (("DNS:" ++) . domainToString) domains))]
   signX509Req req priv (Just dig)
   CSR . toStrict <$> writeX509ReqDER req
   where
