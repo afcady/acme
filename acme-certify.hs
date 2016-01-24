@@ -12,13 +12,10 @@
 module Main where
 
 import           BasePrelude
-import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy.Char8 as LC
-import           Data.Coerce
 import           Network.ACME               (CSR (..), canProvision, certify,
-                                             ensureWritableDir, readKeyFile,
-                                             (</>))
-import           Network.ACME.Encoding      (Keys (..), toStrict)
+                                             ensureWritableDir, (</>))
+import           Network.ACME.Encoding      (Keys (..), readKeys, toStrict)
 import           Network.URI
 import           OpenSSL
 import           OpenSSL.EVP.Digest
@@ -92,11 +89,12 @@ cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <>
                                                 , "(generated certificates will not be trusted!)"
                                                 ]))
 
-genKey :: String -> IO ()
+genKey :: FilePath -> IO String
 genKey privKeyFile = withOpenSSL $ do
     kp <- generateRSAKey' 4096 65537
     pem <- writePKCS8PrivateKey kp Nothing
     writeFile privKeyFile pem
+    return pem
 
 genReq :: Keys -> [DomainName] -> IO CSR
 genReq _ [] = error "genReq called with zero domains"
@@ -112,36 +110,33 @@ genReq (Keys priv pub) domains@(domain:_) = withOpenSSL $ do
   where
     nidSubjectAltName = 85
 
-otherwiseM :: Monad m => m Bool -> m () -> m ()
-a `otherwiseM` b = a >>= flip unless b
-infixl 0 `otherwiseM`
+getOrCreateKeys :: FilePath -> IO (Maybe Keys)
+getOrCreateKeys file = do
+  exists <- doesFileExist file
+  readKeys =<< if exists then readFile file else genKey file
 
 go :: CmdOpts -> IO ()
 go CmdOpts { .. } = do
   let terms           = fromMaybe defaultTerms (join $ parseAbsoluteURI <$> optTerms)
       directoryUrl    = if optStaging then stagingDirectoryUrl else liveDirectoryUrl
       domainKeyFile   = domainDir </> "rsa.key"
-      domainCSRFile   = domainDir </> "csr.der"
       domainCertFile  = domainDir </> "cert.der"
       domainDir       = fromMaybe (head optDomains) optDomainDir
       privKeyFile     = optKeyFile
       requestDomains  = fromMaybe (error "invalid domain name") $ sequence $ domainName . fromString <$> optDomains
 
-  doesFileExist privKeyFile `otherwiseM` genKey privKeyFile
-
   doesDirectoryExist domainDir `otherwiseM` createDirectory domainDir
-  doesFileExist domainKeyFile `otherwiseM` genKey domainKeyFile
 
-  Just keys <- readKeyFile privKeyFile
+  Just domainKeys <- getOrCreateKeys domainKeyFile
+  Just keys <- getOrCreateKeys privKeyFile
 
   challengeDir <- ensureWritableDir optChallengeDir "challenge directory"
   void $ ensureWritableDir domainDir "domain directory"
 
-  forM_ requestDomains $ canProvision challengeDir >=> (`unless` error "Error: cannot provision files to web server via challenge directory")
+  forM_ requestDomains $ canProvision challengeDir >=>
+            (`unless` error "Error: cannot provision files to web server via challenge directory")
 
-  csrData <- fromMaybe (error "Error: failed to read domain key file") <$>
-             readKeyFile domainKeyFile >>= flip genReq requestDomains
-  B.writeFile domainCSRFile (coerce csrData)
+  csrData <- genReq domainKeys requestDomains
 
   let email = either (error . ("Error: invalid email address: " ++)) id . validate . fromString <$> optEmail
 
@@ -149,3 +144,6 @@ go CmdOpts { .. } = do
 
   either (error . ("Error: " ++)) (LC.writeFile domainCertFile) certificate
 
+otherwiseM :: Monad m => m Bool -> m () -> m ()
+a `otherwiseM` b = a >>= flip unless b
+infixl 0 `otherwiseM`
