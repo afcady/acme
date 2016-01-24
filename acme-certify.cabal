@@ -16,8 +16,8 @@ library
   exposed-modules:     Network.ACME
   build-depends:       base >= 4.7 && < 5,
                        cryptonite, aeson, bytestring, base64-bytestring, SHA,
-                       text, HsOpenSSL, wreq, lens, lens-aeson,
-                       mtl, time
+                       text, HsOpenSSL, wreq, lens, lens-aeson, mtl, time,
+                       email-validate
   default-language:    Haskell2010
 
 executable acme-certify
@@ -27,7 +27,8 @@ executable acme-certify
   build-depends:       base, acme-certify,
                        cryptonite, aeson, bytestring, base64-bytestring, SHA,
                        text, HsOpenSSL, wreq, lens, lens-aeson,
-                       optparse-applicative, directory, mtl, time, pipes
+                       optparse-applicative, directory, mtl, time, pipes,
+                       email-validate
   default-language:    Haskell2010
 
 -- test-suite acme-certify-test

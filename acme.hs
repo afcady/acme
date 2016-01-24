@@ -44,6 +44,7 @@ import           Options.Applicative        hiding (header)
 import qualified Options.Applicative        as Opt
 import           Pipes
 import           System.Directory
+import Text.Email.Validate
 
 stagingDirectoryUrl, liveDirectoryUrl :: String
 liveDirectoryUrl = "https://acme-v01.api.letsencrypt.org/directory"
@@ -154,14 +155,20 @@ go CmdOpts { .. } = do
 
   Just keys <- readKeyFile privKeyFile
 
-  doesFileExist domainCSRFile `otherwiseM` genReq domainKeyFile requestDomains >>= LC.writeFile domainCSRFile
-
-  csrData <- B.readFile domainCSRFile
-
   ensureWritable optChallengeDir "challenge directory"
   ensureWritable domainDir "domain directory"
 
   forM_ requestDomains $ canProvision optChallengeDir >=> (`unless` error "Error: cannot provision files to web server via challenge directory")
+
+  csrData <- CSR . toStrict <$> genReq domainKeyFile requestDomains
+  B.writeFile domainCSRFile (coerce csrData)
+
+  let email = either (error . ("Error: invalid email address: " ++)) id . validate . fromString <$> optEmail
+
+  certify directoryUrl keys email terms requestDomains optChallengeDir csrData domainCertFile
+
+certify :: String -> Keys -> Maybe EmailAddress -> String -> [String] -> String -> CSR -> FilePath -> IO ()
+certify directoryUrl keys optEmail terms requestDomains optChallengeDir csrData domainCertFile =
 
   runACME directoryUrl keys $ do
     forM_ optEmail $ register terms >=> statusReport
@@ -177,6 +184,8 @@ go CmdOpts { .. } = do
     runEffect $ producer >-> consumer
 
     retrieveCert csrData >>= statusReport >>= saveCert domainCertFile
+
+newtype CSR = CSR ByteString
 
 (</>) :: String -> String -> String
 a </> b = a ++ "/" ++ b
@@ -234,8 +243,8 @@ saveCert domainCertFile r =
   where
     isSuccess n = n >= 200 && n <= 300
 
-retrieveCert :: (MonadReader Env m, MonadState Nonce m, MonadIO m) => ByteString -> m (Response LC.ByteString)
-retrieveCert input = sendPayload _newCert (csr input)
+retrieveCert :: (MonadReader Env m, MonadState Nonce m, MonadIO m) => CSR -> m (Response LC.ByteString)
+retrieveCert input = sendPayload _newCert (csr $ coerce input)
 
 notifyChallenge :: (MonadReader Env m, MonadState Nonce m, MonadIO m) => String -> ByteString -> m (Response LC.ByteString)
 notifyChallenge crUri thumbtoken = sendPayload (const crUri) (challenge thumbtoken)
@@ -263,7 +272,7 @@ getDirectory sess url = do
       k x   = r ^? responseBody . JSON.key x . _String . to T.unpack
   return $ (,) <$> (Directory <$> k "new-cert" <*> k "new-authz" <*> k "revoke-cert" <*> k "new-reg") <*> nonce
 
-register :: String -> String -> ACME (Response LC.ByteString)
+register :: String -> EmailAddress -> ACME (Response LC.ByteString)
 register terms email = sendPayload _newReg (registration email terms)
 
 challengeRequest :: (MonadIO m, MonadState Nonce m, MonadReader Env m) => String -> m (Response LC.ByteString)

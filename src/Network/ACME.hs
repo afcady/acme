@@ -1,6 +1,6 @@
-{-# LANGUAGE OverloadedStrings     #-}
-{-# LANGUAGE RecordWildCards       #-}
-{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards     #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Network.ACME (
     Keys(..),
@@ -32,6 +32,8 @@ import           OpenSSL.EVP.PKey
 import           OpenSSL.EVP.Sign
 import           OpenSSL.PEM
 import           OpenSSL.RSA
+import           Text.Email.Validate
+import qualified Data.Text                  as T
 
 data Keys = Keys RSAKeyPair RSAPubKey
 readKeys :: String -> IO (Maybe Keys)
@@ -69,7 +71,7 @@ header key nonce = (toStrict . encode)
                      (Header "RS256" (JWK (rsaE key) "RSA" (rsaN key)) (Just nonce))
 
 -- | Registration payload to sign with user key.
-registration :: String -> String -> ByteString
+registration :: EmailAddress -> String -> ByteString
 registration emailAddr terms = (b64 . toStrict . encode) (Reg emailAddr terms)
 
 -- | Challenge request payload to sign with user key.
@@ -125,7 +127,7 @@ instance ToJSON JWK where
     ]
 
 data Reg = Reg
-  { rMail      :: String
+  { rMail      :: EmailAddress
   , rAgreement :: String
   }
   deriving Show
@@ -133,7 +135,7 @@ data Reg = Reg
 instance ToJSON Reg where
   toJSON Reg{..} = object
     [ "resource" .= ("new-reg" :: String)
-    , "contact" .= ["mailto:" ++ rMail]
+    , "contact" .= ["mailto:" ++ (T.unpack . decodeUtf8 . toByteString $ rMail)]
     , "agreement" .= rAgreement
     ]
 
