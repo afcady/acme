@@ -47,9 +47,24 @@ certify directoryUrl keys optEmail terms requestDomains optChallengeDir csrData 
           liftIO $ BC.writeFile (coerce optChallengeDir </> BC.unpack token) thumbtoken
           notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
 
-    forM_ requestDomains $ challengeRequest >=> statusReport >=> extractCR >=> performChallenge
+    challengeResultLinks <- forM requestDomains $ challengeRequest >=> statusReport >=> extractCR >=> performChallenge
 
-    retrieveCert csrData >>= statusReport <&> checkCertResponse
+    pollResults challengeResultLinks >>=
+      either (return . Left . ("certificate receipt was not attempted because a challenge failed: " ++))
+             (const (retrieveCert csrData >>= statusReport <&> checkCertResponse))
+
+pollResults :: [Response LC.ByteString] -> ACME (Either String ())
+pollResults [] = return $ Right ()
+pollResults (link:links) = do
+  -- TODO: use "Retry-After" header if present
+  let Just uri = link ^? responseBody . JSON.key "uri" . _String
+  r <- liftIO $ W.get (T.unpack uri)
+  let status = r ^. responseBody . JSON.key "status" . _String
+  case status of
+    "pending" -> pollResults $ links ++ [r]
+    "valid"   -> pollResults links
+    "invalid" -> return . Left $ r ^. responseBody . JSON.key "error" . to extractAcmeError
+    _         -> return . Left $ "unexpected response from ACME server: " ++ show r
 
 data ChallengeRequest = ChallengeRequest { crUri :: String, crToken :: ByteString, crThumbToken :: ByteString }
 
@@ -100,20 +115,24 @@ extractCR r = do
 
   return $ ChallengeRequest nextU token thumbtoken
 
-ncErrorReport :: (Show body, AsValue body, MonadIO m) => Response body -> m ()
-ncErrorReport r =
+ncErrorReport :: (Show body, AsValue body, MonadIO m) => Response body -> m (Response body)
+ncErrorReport r = do
   when (Just "pending" /= r ^? responseBody . JSON.key "status" . _String) $ liftIO $ do
     putStrLn "Unexpected response to challenge-response request:"
     print r
+  return r
+
+extractAcmeError :: forall s. AsValue s => s -> String
+extractAcmeError r = summary ++ "  ----  " ++ details
+  where
+    (Just summary, Just details) = (k "type", k "detail")
+    k x = r ^? JSON.key x . _String . to T.unpack
 
 checkCertResponse :: Response LC.ByteString -> Either String LC.ByteString
 checkCertResponse r =
   if isSuccess $ r ^. responseStatus . statusCode
     then Right $ r ^. responseBody
-    else
-      let (summary, details) = (k "type", k "detail")
-          k x = r ^?! responseBody . JSON.key x . _String . to T.unpack
-      in Left $ summary ++ "  ----  " ++ details
+    else Left $ r ^. responseBody . to extractAcmeError
   where
     isSuccess n = n >= 200 && n <= 300
 
