@@ -31,13 +31,31 @@ import           Network.Wreq               (Response, checkStatus, defaults,
                                              statusMessage)
 import qualified Network.Wreq               as W
 import qualified Network.Wreq.Session       as WS
-import           OpenSSL.RSA
 import           System.Directory
 import           Text.Email.Validate
 import           Text.Domain.Validate hiding (validate)
 import           Network.URI
+import           OpenSSL
+import           OpenSSL.EVP.Digest
+import           OpenSSL.RSA
+import           OpenSSL.X509.Request
+import Data.List
 
 type HttpProvisioner = URI -> ByteString -> IO ()
+
+genReq :: Keys -> [DomainName] -> IO CSR
+genReq _ [] = error "genReq called with zero domains"
+genReq (Keys priv pub) domains@(domain:_) = withOpenSSL $ do
+  Just dig <- getDigestByName "SHA256"
+  req <- newX509Req
+  setSubjectName req [("CN", domainToString domain)]
+  setVersion req 0
+  setPublicKey req pub
+  void $ addExtensions req [(nidSubjectAltName, intercalate ", " (map (("DNS:" ++) . domainToString) domains))]
+  signX509Req req priv (Just dig)
+  CSR domains . toStrict <$> writeX509ReqDER req
+  where
+    nidSubjectAltName = 85
 
 fileProvisioner :: WritableDir -> HttpProvisioner
 fileProvisioner challengeDir = BC.writeFile . uToF

@@ -13,14 +13,12 @@ module Main where
 
 import           BasePrelude
 import qualified Data.ByteString.Lazy.Char8 as LC
-import           Network.ACME               (CSR (..), canProvision, certify, fileProvisioner, ensureWritableDir, (</>), domainToString)
-import           Network.ACME.Encoding      (Keys (..), readKeys, toStrict)
+import           Network.ACME               (canProvision, certify, fileProvisioner, ensureWritableDir, (</>), genReq)
+import           Network.ACME.Encoding      (Keys (..), readKeys)
 import           Network.URI
 import           OpenSSL
-import           OpenSSL.EVP.Digest
 import           OpenSSL.PEM
 import           OpenSSL.RSA
-import           OpenSSL.X509.Request
 import           Options.Applicative        hiding (header)
 import qualified Options.Applicative        as Opt
 import           System.Directory
@@ -94,20 +92,6 @@ genKey privKeyFile = withOpenSSL $ do
   pem <- writePKCS8PrivateKey kp Nothing
   writeFile privKeyFile pem
   return pem
-
-genReq :: Keys -> [DomainName] -> IO CSR
-genReq _ [] = error "genReq called with zero domains"
-genReq (Keys priv pub) domains@(domain:_) = withOpenSSL $ do
-  Just dig <- getDigestByName "SHA256"
-  req <- newX509Req
-  setSubjectName req [("CN", domainToString domain)]
-  setVersion req 0
-  setPublicKey req pub
-  void $ addExtensions req [(nidSubjectAltName, intercalate ", " (map (("DNS:" ++) . domainToString) domains))]
-  signX509Req req priv (Just dig)
-  CSR domains . toStrict <$> writeX509ReqDER req
-  where
-    nidSubjectAltName = 85
 
 getOrCreateKeys :: FilePath -> IO (Maybe Keys)
 getOrCreateKeys file = do
