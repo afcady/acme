@@ -13,8 +13,7 @@ module Main where
 
 import           BasePrelude
 import qualified Data.ByteString.Lazy.Char8 as LC
-import           Network.ACME               (CSR (..), canProvision, certify,
-                                             ensureWritableDir, (</>), domainToString)
+import           Network.ACME               (CSR (..), canProvision, certify, fileProvisioner, ensureWritableDir, (</>), domainToString)
 import           Network.ACME.Encoding      (Keys (..), readKeys, toStrict)
 import           Network.URI
 import           OpenSSL
@@ -106,7 +105,7 @@ genReq (Keys priv pub) domains@(domain:_) = withOpenSSL $ do
   setPublicKey req pub
   void $ addExtensions req [(nidSubjectAltName, intercalate ", " (map (("DNS:" ++) . domainToString) domains))]
   signX509Req req priv (Just dig)
-  CSR . toStrict <$> writeX509ReqDER req
+  CSR domains . toStrict <$> writeX509ReqDER req
   where
     nidSubjectAltName = 85
 
@@ -133,14 +132,16 @@ go CmdOpts { .. } = do
   challengeDir <- ensureWritableDir optChallengeDir "challenge directory"
   void $ ensureWritableDir domainDir "domain directory"
 
-  forM_ requestDomains $ canProvision challengeDir >=>
-            (`unless` error "Error: cannot provision files to web server via challenge directory")
+  let skipProvisionCheck = True
+  unless skipProvisionCheck $
+    forM_ requestDomains $ canProvision challengeDir >=>
+      (`unless` error "Error: cannot provision files to web server via challenge directory")
 
-  csrData <- genReq domainKeys requestDomains
+  certReq <- genReq domainKeys requestDomains
 
   let email = either (error . ("Error: invalid email address: " ++)) id . validate . fromString <$> optEmail
 
-  certificate <- certify directoryUrl keys email terms requestDomains challengeDir csrData
+  certificate <- certify directoryUrl keys ((,) terms <$> email) (fileProvisioner challengeDir) certReq
 
   either (error . ("Error: " ++)) (LC.writeFile domainCertFile) certificate
 

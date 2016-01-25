@@ -37,21 +37,38 @@ import           Text.Email.Validate
 import           Text.Domain.Validate hiding (validate)
 import           Network.URI
 
-certify :: URI -> Keys -> Maybe EmailAddress -> URI -> [DomainName] -> WritableDir -> CSR -> IO (Either String LC.ByteString)
-certify directoryUrl keys optEmail terms requestDomains optChallengeDir csrData =
+type HttpProvisioner = URI -> ByteString -> IO ()
+
+fileProvisioner :: WritableDir -> HttpProvisioner
+fileProvisioner challengeDir = BC.writeFile . uToF
+  where
+    uToF = (coerce challengeDir </>) . takeWhileEnd (/= '/') . uriPath
+    takeWhileEnd f = reverse . takeWhile f . reverse
+
+acmeChallengeURI :: DomainName -> BC.ByteString -> URI
+acmeChallengeURI dom tok = URI
+                             "http:"
+                             (Just $ URIAuth "" (domainToString dom) "")
+                             ("/.well-known/acme-challenge" </> BC.unpack tok)
+                             ""
+                             ""
+
+certify :: URI -> Keys -> Maybe (URI, EmailAddress) -> HttpProvisioner -> CSR -> IO (Either String LC.ByteString)
+certify directoryUrl keys reg provision certReq =
 
   runACME directoryUrl keys $ do
-    forM_ optEmail $ register terms >=> statusReport
+    forM_ reg $ uncurry register >=> statusReport
 
-    let performChallenge (ChallengeRequest nextUri token thumbtoken) = do
-          liftIO $ BC.writeFile (coerce optChallengeDir </> BC.unpack token) thumbtoken
+    let performChallenge domain (ChallengeRequest nextUri token thumbtoken) = do
+          liftIO $ provision (acmeChallengeURI domain token) thumbtoken
           notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
 
-    challengeResultLinks <- forM requestDomains $ challengeRequest >=> statusReport >=> extractCR >=> performChallenge
+    challengeResultLinks <- forM (csrDomains certReq) $ \dom ->
+      challengeRequest dom >>= statusReport >>= extractCR >>= performChallenge dom
 
     pollResults challengeResultLinks >>=
       either (return . Left . ("certificate receipt was not attempted because a challenge failed: " ++))
-             (const (retrieveCert csrData >>= statusReport <&> checkCertResponse))
+             (const (retrieveCert certReq >>= statusReport <&> checkCertResponse))
 
 pollResults :: [Response LC.ByteString] -> ACME (Either String ())
 pollResults [] = return $ Right ()
@@ -68,7 +85,7 @@ pollResults (link:links) = do
 
 data ChallengeRequest = ChallengeRequest { crUri :: String, crToken :: ByteString, crThumbToken :: ByteString }
 
-newtype CSR = CSR ByteString
+data CSR = CSR { csrDomains :: [DomainName], csrData :: ByteString }
 
 newtype WritableDir = WritableDir String
 ensureWritableDir :: FilePath -> String -> IO WritableDir
@@ -137,7 +154,7 @@ checkCertResponse r =
     isSuccess n = n >= 200 && n <= 300
 
 retrieveCert :: (MonadReader Env m, MonadState Nonce m, MonadIO m) => CSR -> m (Response LC.ByteString)
-retrieveCert input = sendPayload _newCert (csr $ coerce input)
+retrieveCert input = sendPayload _newCert (csr $ csrData input)
 
 notifyChallenge :: (MonadReader Env m, MonadState Nonce m, MonadIO m) => String -> ByteString -> m (Response LC.ByteString)
 notifyChallenge uri thumbtoken = sendPayload (const uri) (challenge thumbtoken)
