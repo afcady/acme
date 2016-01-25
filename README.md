@@ -24,52 +24,59 @@ Available options:
                            (generated certificates will not be trusted!)
 ```
 
-This is a simple Haskell script to obtain a certificate from [Let's
-Encrypt](https://letsencrypt.org/) using their ACME protocol.
+This program can be used to obtain a certificate from
+[Let's Encrypt](https://letsencrypt.org/) using their ACME protocol.
 
+## Rate Limits
 
-- The main source of information to write this was
-  https://github.com/diafygi/letsencrypt-nosudo
+This tool supports multiple domain names per certificate. Note that `Let's
+Encrypt` will not sign a certificate with more than 100 names; nor will it allow
+more than 100 names to be signed for a single domain (no matter how many
+certificates the names are spread across). Furthermore, you can only issue 5
+certificates per domain per week.
 
-- The ACME spec: https://letsencrypt.github.io/acme-spec/
+The `Let's Encrypt` community documentation contains more
+[information about rate limits](https://community.letsencrypt.org/t/rate-limits-for-lets-encrypt/6769).
 
-## Generate user account keys
+## User account keys
 
-The needed keys will be automatically generated with HsOpenSSL. You can also
-pre-generate them manually, in which case they won't be overwritten:
+Under ACME, each certificate request is associated with a private key used to
+sign communications with the ACME server. The key is furthermore associated with
+an email address.
 
+Note: `Let's Encrypt` requires that this key be different from the key used for
+the certificate.
+
+Use the `--email` command line argument to specify an email address to associate
+with a private key.  If there is no private key, one will be generated;
+otherwise, the existing one will be used.  This only needs to be done once per
+private key.
+
+Currently, only RSA keys are supported by this tool.  You can generate compatible
+keys like this:
 
 ```
 openssl genrsa 4096 > user.key
-mkdir -p ${DOMAIN_NAME}
-openssl genrsa 4096 > ${DOMAIN_NAME}/rsa.key
-```
-
-## Send CSR 
-
-The CSR will be automatically created.  You can also create it yourself with:
-
-```
-> openssl req -new -sha256 -key ${DOMAIN}/rsa.key \
-      -subj "/CN=aaa.reesd.com" -outform DER > ${DOMAIN}/csr.der
+mkdir -p ${DOMAIN}
+openssl genrsa 4096 > ${DOMAIN}/rsa.key
 ```
 
 ## Receive certificate
 
 The signed certificate will be saved by this program in
-``./${DOMAIN}/cert.der``. You can copy that file to the place your TLS server is
-configured to read it.
+``./${DOMAIN}/cert.der``. You can copy that file to the place your TLS
+server is configured to read it.
 
 You can also view the certificate like so:
 
 ```
-> openssl x509 -inform der -in ${DOMAIN}/cert.der  -noout -text | less
+openssl x509 -inform der -in ${DOMAIN}/cert.der  -noout -text | less
 ```
 
 ## Create a certificate for HAProxy
 
-Including explicit DH key exchange parameters to prevent Logjam attack
-(https://weakdh.org/).
+Vo Minh Thu, the original author of this program, suggests to include explicit
+DH key exchange parameters to prevent the [Logjam attack](https://weakdh.org/).
 
 ```
 > openssl x509 -inform der -in ${DOMAIN}/cert.der \
