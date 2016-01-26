@@ -12,21 +12,22 @@
 module Main where
 
 import           BasePrelude
-import qualified Data.ByteString.Lazy.Char8 as LC
-import           Network.ACME               (canProvision, certify, fileProvisioner, ensureWritableDir, (</>), genReq)
-import           Network.ACME.Encoding      (Keys (..), readKeys)
+import           Network.ACME          (canProvision, certify,
+                                        ensureWritableDir, fileProvisioner,
+                                        genReq, (</>))
+import           Network.ACME.Encoding (Keys (..), readKeys)
 import           Network.URI
 import           OpenSSL
-import           OpenSSL.X509 (X509)
 import           OpenSSL.DH
 import           OpenSSL.PEM
 import           OpenSSL.RSA
-import           Options.Applicative        hiding (header)
-import qualified Options.Applicative        as Opt
+import           OpenSSL.X509          (X509)
+import           Options.Applicative   hiding (header)
+import qualified Options.Applicative   as Opt
 import           System.Directory
-import           Text.Domain.Validate       hiding (validate)
+import           System.IO
+import           Text.Domain.Validate  hiding (validate)
 import           Text.Email.Validate
-import System.IO
 
 stagingDirectoryUrl, liveDirectoryUrl :: URI
 Just liveDirectoryUrl = parseAbsoluteURI "https://acme-v01.api.letsencrypt.org/directory"
@@ -42,13 +43,15 @@ main = execParser opts >>= go
                             ]
 
 data CmdOpts = CmdOpts {
-      optKeyFile      :: String,
-      optDomains      :: [String],
-      optChallengeDir :: String,
-      optDomainDir    :: Maybe String,
-      optEmail        :: Maybe String,
-      optTerms        :: Maybe String,
-      optStaging      :: Bool
+      optKeyFile            :: String,
+      optDomains            :: [String],
+      optChallengeDir       :: String,
+      optDomainDir          :: Maybe String,
+      optEmail              :: Maybe String,
+      optTerms              :: Maybe String,
+      optSkipDH             :: Bool,
+      optStaging            :: Bool,
+      optSkipProvisionCheck :: Bool
 }
 
 defaultTerms :: URI
@@ -56,62 +59,63 @@ Just defaultTerms = parseAbsoluteURI "https://letsencrypt.org/documents/LE-SA-v1
 
 cmdopts :: Parser CmdOpts
 cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <>
-                                 help "filename of your private RSA key")
+                                 help "Filename of your private RSA key")
                   <*> some
                         (strOption
                            (long "domain" <>
                             metavar "DOMAIN" <>
                             help
                               (unwords
-                                 [ "the domain name(s) to certify;"
+                                 [ "The domain name(s) to certify;"
                                  , "specify more than once for a multi-domain certificate"
                                  ])))
                   <*> strOption (long "challenge-dir" <> metavar "DIR" <>
-                                 help "output directory for ACME challenges")
+                                 help "Output directory for ACME challenges")
                   <*> optional
                         (strOption
                            (long "domain-dir" <>
                             metavar "DIR" <>
                             help
                               (unwords
-                                 [ "directory in which to domain certificates and keys are stored;"
+                                 [ "Directory in which to domain certificates and keys are stored;"
                                  , "the default is to use the (first) domain name as a directory name"
                                  ])))
                   <*> optional
                         (strOption (long "email" <> metavar "ADDRESS" <>
-                                    help "an email address with which to register an account"))
+                                    help "An email address with which to register an account"))
                   <*> optional (strOption (long "terms" <> metavar "URL" <>
-                                           help "the terms param of the registration request"))
+                                           help "The terms param of the registration request"))
+                  <*> switch
+                        (long "skip-dhparams" <> help "Don't generate DH params for combined cert")
                   <*> switch
                         (long "staging" <> help
                                              (unwords
-                                                [ "use staging servers instead of live servers"
+                                                [ "Use staging servers instead of live servers"
                                                 , "(generated certificates will not be trusted!)"
                                                 ]))
-
-genKey :: FilePath -> IO String
-genKey privKeyFile = withOpenSSL $ do
-  kp <- generateRSAKey' 4096 65537
-  pem <- writePKCS8PrivateKey kp Nothing
-  writeFile privKeyFile pem
-  return pem
-
-getOrCreateKeys :: FilePath -> IO (Maybe Keys)
-getOrCreateKeys file = do
-  exists <- doesFileExist file
-  readKeys =<< if exists then readFile file else genKey file
+                  <*> switch
+                        (long "skip-provision-check" <> help
+                                             (unwords
+                                                [ "Don't test whether HTTP provisioning works before"
+                                                , "making ACME requests; only useful for testing."
+                                                ]))
 
 go :: CmdOpts -> IO ()
 go CmdOpts { .. } = do
-  let terms           = fromMaybe defaultTerms (join $ parseAbsoluteURI <$> optTerms)
-      directoryUrl    = if optStaging then stagingDirectoryUrl else liveDirectoryUrl
-      domainKeyFile   = domainDir </> "rsa.key"
-      domainCertFile  = domainDir </> "cert.der"
-      domainDir       = fromMaybe (head optDomains) optDomainDir
-      privKeyFile     = optKeyFile
-      requestDomains  = fromMaybe (error "invalid domain name") $ sequence $ domainName . fromString <$> optDomains
+  let terms              = fromMaybe defaultTerms (join $ parseAbsoluteURI <$> optTerms)
+      directoryUrl       = if optStaging then stagingDirectoryUrl else liveDirectoryUrl
+      domainKeyFile      = domainDir </> "rsa.key"
+      domainCombinedFile = domainDir </> "cert.combined.pem"
+      domainCertFile     = domainDir </> "cert.pem"
+      domainDhFile       = domainDir </> "dhparams.pem"
+      domainDir          = fromMaybe (head optDomains) optDomainDir
+      privKeyFile        = optKeyFile
+      requestDomains     = map domainName' optDomains
 
   doesDirectoryExist domainDir `otherwiseM` createDirectory domainDir
+
+  let issuerCertFile = "lets-encrypt-x1-cross-signed.pem"
+  issuerCert <- readFile issuerCertFile >>= readX509
 
   Just domainKeys <- getOrCreateKeys domainKeyFile
   Just keys <- getOrCreateKeys privKeyFile
@@ -119,8 +123,7 @@ go CmdOpts { .. } = do
   challengeDir <- ensureWritableDir optChallengeDir "challenge directory"
   void $ ensureWritableDir domainDir "domain directory"
 
-  let skipProvisionCheck = True
-  unless skipProvisionCheck $
+  unless optSkipProvisionCheck $
     forM_ requestDomains $ canProvision challengeDir >=>
       (`unless` error "Error: cannot provision files to web server via challenge directory")
 
@@ -128,19 +131,44 @@ go CmdOpts { .. } = do
 
   let email = either (error . ("Error: invalid email address: " ++)) id . validate . fromString <$> optEmail
 
-  let issuerCertFile = "lets-encrypt-x1-cross-signed.pem"
-  issuerCert <- readFile issuerCertFile >>= readX509
+  dh <- if optSkipDH then return Nothing else Just <$> getOrCreateDH domainDhFile
 
+  certificate <- certify directoryUrl keys ((,) terms <$> email) (fileProvisioner challengeDir) certReq
+
+  let saveCombined  = combinedCert issuerCert dh domainKeys >=> writeFile domainCombinedFile
+      savePEM       = writeX509                             >=> writeFile domainCertFile
+      saveBoth x509 = savePEM x509 >> saveCombined x509
+
+  either (error . ("Error: " ++)) saveBoth certificate
+
+genKey :: IO String
+genKey = withOpenSSL $ do
+  kp <- generateRSAKey' 4096 65537
+  writePKCS8PrivateKey kp Nothing
+
+getOrCreate :: IO String -> (String -> IO a) -> FilePath -> IO a
+getOrCreate gen parse file = do
+  exists <- doesFileExist file
+  parse =<< if exists then readFile file else gen >>= save file
+  where
+    save f x = writeFile f x >> return x
+
+getOrCreateKeys :: FilePath -> IO (Maybe Keys)
+getOrCreateKeys = getOrCreate genKey readKeys
+
+getOrCreateDH :: FilePath -> IO DHP
+getOrCreateDH = getOrCreate (genDHParams' >>= writeDHParams) readDHParams
+
+domainName' :: String -> DomainName
+domainName' dom = fromMaybe (error $ "Error: invalid domain name: " ++ show dom) (domainName $ fromString dom)
+
+genDHParams' :: IO DHP
+genDHParams' = do
   hSetBuffering stdout NoBuffering
   putStr "Generating DH Params..."
   dh <- genDHParams DHGen2 2048
   putStrLn "  Done."
-
-  certificate <- certify directoryUrl keys ((,) terms <$> email) (fileProvisioner challengeDir) certReq
-
-  either (error . ("Error: " ++))
-         (combinedCert issuerCert (Just dh) domainKeys >=> writeFile domainCertFile)
-         certificate
+  return dh
 
 combinedCert :: X509 -> Maybe DHP -> Keys -> X509 -> IO String
 combinedCert issuerCert dh (Keys privKey _) cert = do
