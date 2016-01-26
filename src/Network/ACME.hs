@@ -41,6 +41,8 @@ import           OpenSSL.RSA
 import           OpenSSL.X509.Request
 import           OpenSSL.X509 (readDerX509, X509)
 import Data.List
+import Control.Error
+import Control.Arrow
 
 type HttpProvisioner = URI -> ByteString -> IO ()
 
@@ -73,23 +75,24 @@ acmeChallengeURI dom tok = URI
                              ""
 
 certify :: URI -> Keys -> Maybe (URI, EmailAddress) -> HttpProvisioner -> CSR -> IO (Either String X509)
-certify directoryUrl keys reg provision certReq = run >>= traverse readDerX509
+certify directoryUrl keys reg provision certReq =
 
-  where
-    run =
-      runACME directoryUrl keys $ do
-        forM_ reg $ uncurry register >=> statusReport
+  (mapM readDerX509 =<<) $ runACME directoryUrl keys $ do
 
-        let performChallenge domain (ChallengeRequest nextUri token thumbtoken) = do
-              liftIO $ provision (acmeChallengeURI domain token) thumbtoken
-              notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
+    forM_ reg $ uncurry register >=> statusReport
 
-        challengeResultLinks <- forM (csrDomains certReq) $ \dom ->
-          challengeRequest dom >>= statusReport >>= extractCR >>= performChallenge dom
+    let performChallenge domain (ChallengeRequest nextUri token thumbtoken) = do
+          liftIO $ provision (acmeChallengeURI domain token) thumbtoken
+          notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
 
-        pollResults challengeResultLinks >>=
-          either (return . Left . ("certificate receipt was not attempted because a challenge failed: " ++))
-                 (const (retrieveCert certReq >>= statusReport <&> checkCertResponse))
+    challengeResultLinks <- forM (csrDomains certReq) $ \dom -> challengeRequest dom >>=
+                                                                statusReport >>=
+                                                                extractCR >>=
+                                                                performChallenge dom
+
+    runExceptT $ do
+      ExceptT $ pollResults challengeResultLinks <&> left ("certificate receipt was not attempted because a challenge failed: " ++)
+      ExceptT $ retrieveCert certReq >>= statusReport <&> checkCertResponse
 
 pollResults :: [Response LC.ByteString] -> ACME (Either String ())
 pollResults [] = return $ Right ()
@@ -111,9 +114,9 @@ data CSR = CSR { csrDomains :: [DomainName], csrData :: ByteString }
 newtype WritableDir = WritableDir String
 ensureWritableDir :: FilePath -> String -> IO WritableDir
 ensureWritableDir file name = do
-  (writable <$> getPermissions file) >>= flip unless (err name)
+  (writable <$> getPermissions file) >>= flip unless (e name)
   return $ WritableDir file
-  where err n = error $ "Error: " ++ n ++ " is not writable"
+  where e n = error $ "Error: " ++ n ++ " is not writable"
 
 (</>) :: String -> String -> String
 a </> b = a ++ "/" ++ b
