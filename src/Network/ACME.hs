@@ -39,6 +39,7 @@ import           OpenSSL
 import           OpenSSL.EVP.Digest
 import           OpenSSL.RSA
 import           OpenSSL.X509.Request
+import           OpenSSL.X509 (readDerX509, X509)
 import Data.List
 
 type HttpProvisioner = URI -> ByteString -> IO ()
@@ -71,29 +72,31 @@ acmeChallengeURI dom tok = URI
                              ""
                              ""
 
-certify :: URI -> Keys -> Maybe (URI, EmailAddress) -> HttpProvisioner -> CSR -> IO (Either String LC.ByteString)
-certify directoryUrl keys reg provision certReq =
+certify :: URI -> Keys -> Maybe (URI, EmailAddress) -> HttpProvisioner -> CSR -> IO (Either String X509)
+certify directoryUrl keys reg provision certReq = run >>= traverse readDerX509
 
-  runACME directoryUrl keys $ do
-    forM_ reg $ uncurry register >=> statusReport
+  where
+    run =
+      runACME directoryUrl keys $ do
+        forM_ reg $ uncurry register >=> statusReport
 
-    let performChallenge domain (ChallengeRequest nextUri token thumbtoken) = do
-          liftIO $ provision (acmeChallengeURI domain token) thumbtoken
-          notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
+        let performChallenge domain (ChallengeRequest nextUri token thumbtoken) = do
+              liftIO $ provision (acmeChallengeURI domain token) thumbtoken
+              notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
 
-    challengeResultLinks <- forM (csrDomains certReq) $ \dom ->
-      challengeRequest dom >>= statusReport >>= extractCR >>= performChallenge dom
+        challengeResultLinks <- forM (csrDomains certReq) $ \dom ->
+          challengeRequest dom >>= statusReport >>= extractCR >>= performChallenge dom
 
-    pollResults challengeResultLinks >>=
-      either (return . Left . ("certificate receipt was not attempted because a challenge failed: " ++))
-             (const (retrieveCert certReq >>= statusReport <&> checkCertResponse))
+        pollResults challengeResultLinks >>=
+          either (return . Left . ("certificate receipt was not attempted because a challenge failed: " ++))
+                 (const (retrieveCert certReq >>= statusReport <&> checkCertResponse))
 
 pollResults :: [Response LC.ByteString] -> ACME (Either String ())
 pollResults [] = return $ Right ()
 pollResults (link:links) = do
   -- TODO: use "Retry-After" header if present
   let Just uri = link ^? responseBody . JSON.key "uri" . _String
-  r <- liftIO $ W.get (T.unpack uri)
+  r <- liftIO $ W.get (T.unpack uri) >>= statusReport
   let status = r ^. responseBody . JSON.key "status" . _String
   case status of
     "pending" -> pollResults $ links ++ [r]

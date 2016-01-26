@@ -8,7 +8,7 @@ packages:
 - '.'
 - location:
     git: git@github.com:afcady/HSOpenSSL.git
-    commit: 11f5c83fbe44d6c1c496be4cc3017fd925ba26e2
+    commit: 90679fb0e20514f915c90c0e27774867a30915df
   extra-dep: true
 - location:
     git: git@github.com:afcady/email-validate-hs.git

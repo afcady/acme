@@ -17,6 +17,8 @@ import           Network.ACME               (canProvision, certify, fileProvisio
 import           Network.ACME.Encoding      (Keys (..), readKeys)
 import           Network.URI
 import           OpenSSL
+import           OpenSSL.X509 (X509)
+import           OpenSSL.DH
 import           OpenSSL.PEM
 import           OpenSSL.RSA
 import           Options.Applicative        hiding (header)
@@ -24,6 +26,7 @@ import qualified Options.Applicative        as Opt
 import           System.Directory
 import           Text.Domain.Validate       hiding (validate)
 import           Text.Email.Validate
+import System.IO
 
 stagingDirectoryUrl, liveDirectoryUrl :: URI
 Just liveDirectoryUrl = parseAbsoluteURI "https://acme-v01.api.letsencrypt.org/directory"
@@ -125,10 +128,29 @@ go CmdOpts { .. } = do
 
   let email = either (error . ("Error: invalid email address: " ++)) id . validate . fromString <$> optEmail
 
+  let issuerCertFile = "lets-encrypt-x1-cross-signed.pem"
+  issuerCert <- readFile issuerCertFile >>= readX509
+
+  hSetBuffering stdout NoBuffering
+  putStr "Generating DH Params..."
+  dh <- genDHParams DHGen2 2048
+  putStrLn "  Done."
+
   certificate <- certify directoryUrl keys ((,) terms <$> email) (fileProvisioner challengeDir) certReq
 
-  either (error . ("Error: " ++)) (LC.writeFile domainCertFile) certificate
+  either (error . ("Error: " ++))
+         (combinedCert issuerCert (Just dh) domainKeys >=> writeFile domainCertFile)
+         certificate
+
+combinedCert :: X509 -> Maybe DHP -> Keys -> X509 -> IO String
+combinedCert issuerCert dh (Keys privKey _) cert = do
+  dhStr <- mapM writeDHParams dh
+  certStr <- writeX509 cert
+  privKeyStr <- writePKCS8PrivateKey privKey Nothing
+  issuerCertStr <- writeX509 issuerCert
+  return $ concat [certStr, issuerCertStr, privKeyStr, fromMaybe "" dhStr]
 
 otherwiseM :: Monad m => m Bool -> m () -> m ()
 a `otherwiseM` b = a >>= flip unless b
 infixl 0 `otherwiseM`
+
