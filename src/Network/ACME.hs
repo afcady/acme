@@ -43,8 +43,7 @@ import           OpenSSL.X509 (readDerX509, X509)
 import Data.List
 import Control.Error
 import Control.Arrow
-
-type HttpProvisioner = URI -> ByteString -> IO ()
+import Control.Monad.Trans.Resource hiding (register)
 
 genReq :: Keys -> [DomainName] -> IO CSR
 genReq _ [] = error "genReq called with zero domains"
@@ -60,11 +59,15 @@ genReq (Keys priv pub) domains@(domain:_) = withOpenSSL $ do
   where
     nidSubjectAltName = 85
 
+type HttpProvisioner = URI -> ByteString -> ResIO ()
 fileProvisioner :: WritableDir -> HttpProvisioner
-fileProvisioner challengeDir = BC.writeFile . uToF
+fileProvisioner challengeDir uri thumbtoken = do
+  void $ allocate (return f) removeFile
+  liftIO $ BC.writeFile f thumbtoken
+
   where
-    uToF = (coerce challengeDir </>) . takeWhileEnd (/= '/') . uriPath
-    takeWhileEnd f = reverse . takeWhile f . reverse
+    f = (coerce challengeDir </>) . takeWhileEnd (/= '/') . uriPath $ uri
+    takeWhileEnd s = reverse . takeWhile s . reverse
 
 acmeChallengeURI :: DomainName -> BC.ByteString -> URI
 acmeChallengeURI dom tok = URI
@@ -76,23 +79,20 @@ acmeChallengeURI dom tok = URI
 
 certify :: URI -> Keys -> Maybe (URI, EmailAddress) -> HttpProvisioner -> CSR -> IO (Either String X509)
 certify directoryUrl keys reg provision certReq =
-
   (mapM readDerX509 =<<) $ runACME directoryUrl keys $ do
-
     forM_ reg $ uncurry register >=> statusReport
 
     let performChallenge domain (ChallengeRequest nextUri token thumbtoken) = do
-          liftIO $ provision (acmeChallengeURI domain token) thumbtoken
+          liftResourceT $ provision (acmeChallengeURI domain token) thumbtoken
           notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
 
-    challengeResultLinks <- forM (csrDomains certReq) $ \dom -> challengeRequest dom >>=
-                                                                statusReport >>=
-                                                                extractCR >>=
-                                                                performChallenge dom
+        cr dom = challengeRequest dom >>= statusReport >>= extractCR >>= performChallenge dom
 
-    runExceptT $ do
-      ExceptT $ pollResults challengeResultLinks <&> left ("certificate receipt was not attempted because a challenge failed: " ++)
-      ExceptT $ retrieveCert certReq >>= statusReport <&> checkCertResponse
+    runResourceT $ do
+      challengeResultLinks <- forM (csrDomains certReq) cr
+      lift . runExceptT $ do
+        ExceptT $ pollResults challengeResultLinks <&> left ("certificate receipt was not attempted because a challenge failed: " ++)
+        ExceptT $ retrieveCert certReq >>= statusReport <&> checkCertResponse
 
 pollResults :: [Response LC.ByteString] -> ACME (Either String ())
 pollResults [] = return $ Right ()
@@ -127,15 +127,14 @@ domainToString = T.unpack . decodeUtf8 . Text.Domain.Validate.toByteString
 
 canProvision :: WritableDir -> DomainName -> IO Bool
 canProvision challengeDir domain = do
-  randomish <- fromString . show <$> getPOSIXTime
+  token <- (".test." ++) . show <$> getPOSIXTime
 
-  let absFile = coerce challengeDir </> relFile
-      relFile = ".test." ++ show randomish
+  let uri = acmeChallengeURI domain (fromString token)
 
-  LC.writeFile absFile randomish
-  r <- W.get $ "http://" ++ domainToString domain </> ".well-known/acme-challenge" </> relFile
-  removeFile absFile
-  return $ r ^. responseBody == randomish
+  r <- runResourceT $ do
+         fileProvisioner challengeDir uri (fromString token)
+         liftIO $ W.get (show uri)
+  return $ r ^. responseBody == fromString token
 
 
 extractCR :: MonadReader Env m => Response LC.ByteString -> m ChallengeRequest
