@@ -16,6 +16,7 @@ import           Network.ACME          (canProvision, certify,
                                         ensureWritableDir, fileProvisioner,
                                         genReq, (</>))
 import           Network.ACME.Encoding (Keys (..), readKeys)
+import           Network.ACME.Issuer   (letsEncryptX1CrossSigned)
 import           Network.URI
 import           OpenSSL
 import           OpenSSL.DH
@@ -29,9 +30,10 @@ import           System.IO
 import           Text.Domain.Validate  hiding (validate)
 import           Text.Email.Validate
 
-stagingDirectoryUrl, liveDirectoryUrl :: URI
-Just liveDirectoryUrl = parseAbsoluteURI "https://acme-v01.api.letsencrypt.org/directory"
+stagingDirectoryUrl, liveDirectoryUrl, defaultTerms :: URI
+Just liveDirectoryUrl    = parseAbsoluteURI "https://acme-v01.api.letsencrypt.org/directory"
 Just stagingDirectoryUrl = parseAbsoluteURI "https://acme-staging.api.letsencrypt.org/directory"
+Just defaultTerms        = parseAbsoluteURI "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
 
 main :: IO ()
 main = execParser opts >>= go
@@ -53,9 +55,6 @@ data CmdOpts = CmdOpts {
       optStaging            :: Bool,
       optSkipProvisionCheck :: Bool
 }
-
-defaultTerms :: URI
-Just defaultTerms = parseAbsoluteURI "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
 
 cmdopts :: Parser CmdOpts
 cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <>
@@ -111,25 +110,23 @@ go CmdOpts { .. } = do
       domainDir          = fromMaybe (head optDomains) optDomainDir
       privKeyFile        = optKeyFile
       requestDomains     = map domainName' optDomains
+      email              = either (error . ("Error: invalid email address: " ++)) id . validate . fromString <$> optEmail
 
+  issuerCert <- readX509 letsEncryptX1CrossSigned
+
+  seq email (return ())
   doesDirectoryExist domainDir `otherwiseM` createDirectory domainDir
-
-  let issuerCertFile = "lets-encrypt-x1-cross-signed.pem"
-  issuerCert <- readFile issuerCertFile >>= readX509
+  challengeDir <- ensureWritableDir optChallengeDir "challenge directory"
+  void $ ensureWritableDir domainDir "domain directory"
 
   Just domainKeys <- getOrCreateKeys domainKeyFile
   Just keys <- getOrCreateKeys privKeyFile
-
-  challengeDir <- ensureWritableDir optChallengeDir "challenge directory"
-  void $ ensureWritableDir domainDir "domain directory"
 
   unless optSkipProvisionCheck $
     forM_ requestDomains $ canProvision challengeDir >=>
       (`unless` error "Error: cannot provision files to web server via challenge directory")
 
   certReq <- genReq domainKeys requestDomains
-
-  let email = either (error . ("Error: invalid email address: " ++)) id . validate . fromString <$> optEmail
 
   dh <- if optSkipDH then return Nothing else Just <$> getOrCreateDH domainDhFile
 

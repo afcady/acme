@@ -13,12 +13,12 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Network.ACME, Network.ACME.Encoding
+  exposed-modules:     Network.ACME, Network.ACME.Encoding, Network.ACME.Issuer
   build-depends:       base >= 4.7 && < 5,
                        cryptonite, aeson, bytestring, base64-bytestring, SHA,
                        mtl, text, HsOpenSSL, wreq, lens, lens-aeson, time,
                        email-validate, pipes, directory, network-uri, errors,
-                       resourcet
+                       resourcet, file-embed
   default-language:    Haskell2010
 
 executable acme-certify
