@@ -3,8 +3,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Network.ACME.Encoding (
-    Keys(..),
-    readKeys,
     thumbprint,
     JWK(..),
     toStrict,
@@ -12,7 +10,7 @@ module Network.ACME.Encoding (
     challenge,
     registration,
     authz,
-    signPayload,
+    signPayload',
     ) where
 
 import           Crypto.Number.Serialize    (i2osp)
@@ -27,29 +25,17 @@ import           Data.Digest.Pure.SHA       (bytestringDigest, sha256)
 import           Data.Maybe
 import           Data.Text.Encoding         (decodeUtf8)
 import           OpenSSL
-import           OpenSSL.EVP.Digest
-import           OpenSSL.EVP.PKey
-import           OpenSSL.EVP.Sign
-import           OpenSSL.PEM
 import           OpenSSL.RSA
 import           Text.Email.Validate
 import qualified Data.Text                  as T
 
-data Keys = Keys RSAKeyPair RSAPubKey
-readKeys :: String -> IO (Maybe Keys)
-readKeys privKeyData = do
-  keypair :: SomeKeyPair <- readPrivateKey privKeyData PwTTY
-  let (priv :: Maybe RSAKeyPair) = toKeyPair keypair
-  pub <- maybe (return Nothing) (fmap Just . rsaCopyPublic) priv
-  return $ Keys <$> priv <*> pub
-
 --------------------------------------------------------------------------------
 -- | Sign return a payload with a nonce-protected header.
-signPayload :: Keys -> String -> ByteString -> IO LC.ByteString
-signPayload (Keys priv pub) nonce_ payload = withOpenSSL $ do
+
+signPayload' :: (ByteString -> IO ByteString) -> RSAPubKey -> String -> ByteString -> IO LC.ByteString
+signPayload' sign pub nonce_ payload = withOpenSSL $ do
   let protected = b64 (header pub nonce_)
-  Just dig <- getDigestByName "SHA256"
-  sig <- b64 <$> signBS dig priv (B.concat [protected, ".", payload])
+  sig <- b64 <$> sign (B.concat [protected, ".", payload])
   return $ encode (Request (header' pub) protected payload sig)
 
 --------------------------------------------------------------------------------

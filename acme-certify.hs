@@ -12,22 +12,21 @@
 module Main where
 
 import           BasePrelude
-import           Network.ACME          (canProvision, certify,
-                                        ensureWritableDir, fileProvisioner,
-                                        genReq, (</>))
-import           Network.ACME.Encoding (Keys (..), readKeys)
-import           Network.ACME.Issuer   (letsEncryptX1CrossSigned)
+import           Network.ACME         (Keys (..), canProvision, certify,
+                                       ensureWritableDir, fileProvisioner,
+                                       genReq, readKeys, (</>))
+import           Network.ACME.Issuer  (letsEncryptX1CrossSigned)
 import           Network.URI
 import           OpenSSL
 import           OpenSSL.DH
 import           OpenSSL.PEM
 import           OpenSSL.RSA
-import           OpenSSL.X509          (X509)
-import           Options.Applicative   hiding (header)
-import qualified Options.Applicative   as Opt
+import           OpenSSL.X509         (X509)
+import           Options.Applicative  hiding (header)
+import qualified Options.Applicative  as Opt
 import           System.Directory
 import           System.IO
-import           Text.Domain.Validate  hiding (validate)
+import           Text.Domain.Validate hiding (validate)
 import           Text.Email.Validate
 
 stagingDirectoryUrl, liveDirectoryUrl, defaultTerms :: URI
