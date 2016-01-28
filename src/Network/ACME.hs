@@ -214,7 +214,7 @@ checkCertResponse r =
     then Right $ r ^. responseBody
     else Left $ r ^. responseBody . to extractAcmeError
   where
-    isSuccess n = n >= 200 && n <= 300
+    isSuccess n = n >= 200 && n < 300
 
 statusLine :: Response body -> String
 statusLine r =  (r ^. responseStatus . statusCode . to show) ++ " " ++ r ^. responseStatus . statusMessage . to (T.unpack . decodeUtf8)
