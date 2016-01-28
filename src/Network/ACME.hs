@@ -217,7 +217,10 @@ checkCertResponse r =
     isSuccess n = n >= 200 && n < 300
 
 statusLine :: Response body -> String
-statusLine r =  (r ^. responseStatus . statusCode . to show) ++ " " ++ r ^. responseStatus . statusMessage . to (T.unpack . decodeUtf8)
+statusLine r = x ++ " " ++ y
+  where
+    x = r ^. responseStatus . statusCode . to show
+    y = r ^. responseStatus . statusMessage . to (T.unpack . decodeUtf8)
 
 statusReport :: MonadIO m => Response body -> m (Response body)
 statusReport r = do
@@ -244,9 +247,8 @@ genReq (Keys priv pub) domains@(domain:_) = withOpenSSL $ do
 data Keys = Keys RSAKeyPair RSAPubKey
 readKeys :: String -> IO (Maybe Keys)
 readKeys privKeyData = do
-  keypair :: SomeKeyPair <- readPrivateKey privKeyData PwTTY
-  let (priv :: Maybe RSAKeyPair) = toKeyPair keypair
-  pub <- maybe (return Nothing) (fmap Just . rsaCopyPublic) priv
+  priv <- toKeyPair <$> readPrivateKey privKeyData PwTTY
+  pub <- mapM rsaCopyPublic priv
   return $ Keys <$> priv <*> pub
 
 -- General utility
@@ -259,9 +261,7 @@ domainToString :: DomainName -> String
 domainToString = T.unpack . decodeUtf8 . Text.Domain.Validate.toByteString
 
 acmeChallengeURI :: DomainName -> BC.ByteString -> URI
-acmeChallengeURI dom tok = URI
-                             "http:"
-                             (Just $ URIAuth "" (domainToString dom) "")
-                             ("/.well-known/acme-challenge" </> BC.unpack tok)
-                             ""
-                             ""
+acmeChallengeURI dom tok = URI "http:" dom' tok' "" ""
+  where
+    dom' = Just $ URIAuth "" (domainToString dom) ""
+    tok' = "/.well-known/acme-challenge" </> BC.unpack tok
