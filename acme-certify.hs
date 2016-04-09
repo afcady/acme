@@ -37,15 +37,30 @@ Just stagingDirectoryUrl = parseAbsoluteURI "https://acme-staging.api.letsencryp
 Just defaultTerms        = parseAbsoluteURI "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
 
 main :: IO ()
-main = execParser opts >>= go >>= either (error . ("Error: " ++)) return
+main = execParser (info opts idm) >>= run
   where
-    opts = info (helper <*> cmdopts) (fullDesc <> progDesc detailedDescription <> Opt.header "Let's Encrypt! ACME client")
+    opts :: Parser Options
+    opts = Options <$> parseCommand
+    parseCommand :: Parser Command
+    parseCommand = subparser $
+      command "certify" (info (helper <*> certifyOpts) desc) <>
+      command "update"  (info (helper <*> updateOpts)  desc)
+    desc = fullDesc <> progDesc detailedDescription <> Opt.header "Let's Encrypt! ACME client"
     detailedDescription = unwords
                             [ "This program will generate a signed TLS certificate"
                             , "using the ACME protocol and the free Let's Encrypt! CA."
                             ]
+run :: Options -> IO ()
+run (Options (Certify opts)) = runCertify opts >>= either (error . ("Error: " ++)) return
+run (Options (Update opts)) = runUpdate opts
 
-data CmdOpts = CmdOpts {
+data Command = Certify CertifyOpts | Update UpdateOpts
+
+data Options = Options {
+      optCommand :: Command
+}
+
+data CertifyOpts = CertifyOpts {
       optKeyFile            :: String,
       optDomains            :: [String],
       optChallengeDir       :: String,
@@ -57,6 +72,10 @@ data CmdOpts = CmdOpts {
       optSkipProvisionCheck :: Bool
 }
 
+data UpdateOpts = UpdateOpts {
+      updateConfigFile :: Maybe FilePath
+}
+
 data AcmeCertRequest = AcmeCertRequest {
       acrDomains        :: [(DomainName, HttpProvisioner)],
       acrSkipDH         :: Bool,
@@ -64,51 +83,62 @@ data AcmeCertRequest = AcmeCertRequest {
       acrUserKeys       :: Keys
 }
 
-cmdopts :: Parser CmdOpts
-cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <>
-                                 help "Filename of your private RSA key")
-                  <*> some
-                        (strOption
-                           (long "domain" <>
-                            metavar "DOMAIN" <>
-                            help
-                              (unwords
-                                 [ "The domain name(s) to certify;"
-                                 , "specify more than once for a multi-domain certificate"
-                                 ])))
-                  <*> strOption (long "challenge-dir" <> metavar "DIR" <>
-                                 help "Output directory for ACME challenges")
-                  <*> optional
-                        (strOption
-                           (long "domain-dir" <>
-                            metavar "DIR" <>
-                            help
-                              (unwords
-                                 [ "Directory in which to domain certificates and keys are stored;"
-                                 , "the default is to use the (first) domain name as a directory name"
-                                 ])))
-                  <*> optional
-                        (strOption (long "email" <> metavar "ADDRESS" <>
-                                    help "An email address with which to register an account"))
-                  <*> optional (strOption (long "terms" <> metavar "URL" <>
-                                           help "The terms param of the registration request"))
-                  <*> switch
-                        (long "skip-dhparams" <> help "Don't generate DH params for combined cert")
-                  <*> switch
-                        (long "staging" <> help
-                                             (unwords
-                                                [ "Use staging servers instead of live servers"
-                                                , "(generated certificates will not be trusted!)"
-                                                ]))
-                  <*> switch
-                        (long "skip-provision-check" <> help
-                                             (unwords
-                                                [ "Don't test whether HTTP provisioning works before"
-                                                , "making ACME requests"
-                                                ]))
+updateOpts :: Parser Command
+updateOpts = fmap Update $
+  UpdateOpts <$> optional
+                   (strOption
+                      (long "config" <>
+                       metavar "FILENAME" <>
+                       help "location of YAML configuration file"))
 
-go :: CmdOpts -> IO (Either String ())
-go CmdOpts { .. } = do
+certifyOpts :: Parser Command
+certifyOpts = fmap Certify $
+  CertifyOpts <$> strOption (long "key" <> metavar "FILE" <>
+                             help "Filename of your private RSA key")
+              <*> some
+                    (strOption
+                       (long "domain" <>
+                        metavar "DOMAIN" <>
+                        help
+                          (unwords
+                             [ "The domain name(s) to certify;"
+                             , "specify more than once for a multi-domain certificate"
+                             ])))
+              <*> strOption (long "challenge-dir" <> metavar "DIR" <>
+                             help "Output directory for ACME challenges")
+              <*> optional
+                    (strOption
+                       (long "domain-dir" <>
+                        metavar "DIR" <>
+                        help
+                          (unwords
+                             [ "Directory in which to domain certificates and keys are stored;"
+                             , "the default is to use the (first) domain name as a directory name"
+                             ])))
+              <*> optional (strOption (long "email" <> metavar "ADDRESS" <>
+                                       help "An email address with which to register an account"))
+              <*> optional (strOption (long "terms" <> metavar "URL" <>
+                                       help "The terms param of the registration request"))
+              <*> switch (long "skip-dhparams" <> help "Don't generate DH params for combined cert")
+              <*> switch
+                    (long "staging" <> help
+                                         (unwords
+                                            [ "Use staging servers instead of live servers"
+                                            , "(generated certificates will not be trusted!)"
+                                            ]))
+              <*> switch
+                    (long "skip-provision-check" <> help
+                                                      (unwords
+                                                         [ "Don't test whether HTTP provisioning works before"
+                                                         , "making ACME requests"
+                                                         ]))
+
+runUpdate :: UpdateOpts -> IO ()
+runUpdate UpdateOpts{..} = do
+  error "test"
+
+runCertify :: CertifyOpts -> IO (Either String ())
+runCertify CertifyOpts{..} = do
   let terms              = fromMaybe defaultTerms (join $ parseAbsoluteURI <$> optTerms)
       directoryUrl       = if optStaging then stagingDirectoryUrl else liveDirectoryUrl
       domainDir          = fromMaybe (head optDomains) optDomainDir
