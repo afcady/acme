@@ -86,13 +86,25 @@ pollResults (link:links) = do
 
 type HttpProvisioner = DomainName -> ByteString -> ByteString -> ResIO ()
 fileProvisioner :: (DomainName -> Maybe WritableDir) -> HttpProvisioner
-fileProvisioner challengeDir (challengeDir -> Just dir) tok thumbtoken = do
+fileProvisioner challengeDir (challengeDir -> Just dir) tok thumbtoken = provisionViaFile dir tok thumbtoken
+fileProvisioner _ dom _ _ = liftIO $ fail $ "fileProvisioner: no writable directory for domain: " ++ show dom
+
+type HttpProvisioner' = ByteString -> ByteString -> ResIO ()
+dispatchProvisioner :: (DomainName -> Maybe HttpProvisioner') -> HttpProvisioner
+dispatchProvisioner dispatch (dispatch -> Just provision) = provision
+dispatchProvisioner _ dom = const . const . liftIO $ fail errmsg
+  where errmsg = "No means specified to provision files over HTTP for domain: " ++ show dom
+
+dispatchProvisioner' :: [(DomainName, HttpProvisioner')] -> HttpProvisioner
+dispatchProvisioner' xs = dispatchProvisioner (`lookup` xs)
+
+provisionViaFile :: WritableDir -> HttpProvisioner'
+provisionViaFile dir tok thumbtoken = do
   void $ allocate (return f) removeFile
   liftIO $ BC.writeFile f thumbtoken
 
   where
     f = (coerce dir </>) (T.unpack $ decodeUtf8 tok)
-fileProvisioner _ dom _ _ = liftIO $ fail $ "fileProvisioner: no writable directory for domain: " ++ show dom
 
 newtype WritableDir = WritableDir String
 ensureWritableDir :: FilePath -> String -> IO WritableDir

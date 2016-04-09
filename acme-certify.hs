@@ -13,9 +13,11 @@
 module Main where
 
 import           BasePrelude
-import           Network.ACME         (Keys (..), WritableDir, canProvision,
-                                       certify, ensureWritableDir,
-                                       fileProvisioner, genReq, readKeys, (</>))
+import           Network.ACME         (HttpProvisioner', Keys (..),
+                                       canProvision, certify,
+                                       dispatchProvisioner', ensureWritableDir,
+                                       genReq, provisionViaFile, readKeys,
+                                       (</>))
 import           Network.ACME.Issuer  (letsEncryptX1CrossSigned)
 import           Network.URI
 import           OpenSSL
@@ -56,10 +58,8 @@ data CmdOpts = CmdOpts {
       optSkipProvisionCheck :: Bool
 }
 
-data Provisioner = ProvisionDir WritableDir
-
 data AcmeCertRequest = AcmeCertRequest {
-      acrDomains        :: [(DomainName, Provisioner)],
+      acrDomains        :: [(DomainName, HttpProvisioner')],
       acrSkipDH         :: Bool,
       acrCertificateDir :: FilePath,
       acrUserKeys       :: Keys
@@ -131,7 +131,7 @@ go CmdOpts { .. } = do
       (`unless` error "Error: cannot provision files to web server via challenge directory")
 
   let req = AcmeCertRequest {..}
-      acrDomains        = map (flip (,) (ProvisionDir challengeDir)) requestDomains
+      acrDomains        = map (flip (,) (provisionViaFile challengeDir)) requestDomains
       acrSkipDH         = optSkipDH
       acrUserKeys       = keys
       acrCertificateDir = domainDir
@@ -139,9 +139,8 @@ go CmdOpts { .. } = do
 
 go' :: URI -> URI -> Maybe EmailAddress -> X509 -> AcmeCertRequest -> IO (Either String ())
 go' directoryUrl terms email issuerCert acr@AcmeCertRequest{..} = do
-  let domainKeyFile      = acrCertificateDir </> "rsa.key"
-  let provision = fileProvisioner (fmap un . flip lookup acrDomains)
-      un (ProvisionDir w) = w
+  let domainKeyFile = acrCertificateDir </> "rsa.key"
+  let provision     = dispatchProvisioner' acrDomains
 
   Just domainKeys <- getOrCreateKeys domainKeyFile
   dh <- saveDhParams acr
