@@ -2,6 +2,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE ViewPatterns          #-}
 
 --------------------------------------------------------------------------------
 -- | Get a certificate from Let's Encrypt using the ACME protocol.
@@ -57,7 +58,7 @@ certify directoryUrl keys reg provision certReq =
     forM_ reg $ uncurry register >=> statusReport
 
     let performChallenge domain (ChallengeRequest nextUri token thumbtoken) = do
-          liftResourceT $ provision (acmeChallengeURI domain token) thumbtoken
+          liftResourceT $ provision domain token thumbtoken
           notifyChallenge nextUri thumbtoken >>= statusReport >>= ncErrorReport
 
         cr dom = challengeRequest dom >>= statusReport >>= extractCR >>= performChallenge dom
@@ -83,15 +84,15 @@ pollResults (link:links) = do
 
 -- Provisioner callback
 
-type HttpProvisioner = URI -> ByteString -> ResIO ()
-fileProvisioner :: WritableDir -> HttpProvisioner
-fileProvisioner challengeDir uri thumbtoken = do
+type HttpProvisioner = DomainName -> ByteString -> ByteString -> ResIO ()
+fileProvisioner :: (DomainName -> Maybe WritableDir) -> HttpProvisioner
+fileProvisioner challengeDir (challengeDir -> Just dir) tok thumbtoken = do
   void $ allocate (return f) removeFile
   liftIO $ BC.writeFile f thumbtoken
 
   where
-    f = (coerce challengeDir </>) . takeWhileEnd (/= '/') . uriPath $ uri
-    takeWhileEnd s = reverse . takeWhile s . reverse
+    f = (coerce dir </>) (T.unpack $ decodeUtf8 tok)
+fileProvisioner _ dom _ _ = liftIO $ fail $ "fileProvisioner: no writable directory for domain: " ++ show dom
 
 newtype WritableDir = WritableDir String
 ensureWritableDir :: FilePath -> String -> IO WritableDir
@@ -100,15 +101,13 @@ ensureWritableDir file name = do
   return $ WritableDir file
   where e n = error $ "Error: " ++ n ++ " is not writable"
 
-canProvision :: WritableDir -> DomainName -> IO Bool
+canProvision :: (DomainName -> Maybe WritableDir) -> DomainName -> IO Bool
 canProvision challengeDir domain = do
   token <- (".test." ++) . show <$> getPOSIXTime
 
-  let uri = acmeChallengeURI domain (fromString token)
-
   r <- runResourceT $ do
-         fileProvisioner challengeDir uri (fromString token)
-         liftIO $ W.get (show uri)
+         fileProvisioner challengeDir domain (fromString token) (fromString token)
+         liftIO $ W.get $ show $ acmeChallengeURI domain (fromString token)
   return $ r ^. responseBody == fromString token
 
 -- The ACME monad

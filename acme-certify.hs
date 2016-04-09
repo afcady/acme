@@ -122,14 +122,15 @@ go CmdOpts { .. } = do
   Just keys <- getOrCreateKeys privKeyFile
 
   unless optSkipProvisionCheck $
-    forM_ requestDomains $ canProvision challengeDir >=>
+    forM_ requestDomains $ canProvision (const $ Just challengeDir) >=>
       (`unless` error "Error: cannot provision files to web server via challenge directory")
 
   certReq <- genReq domainKeys requestDomains
 
   dh <- if optSkipDH then return Nothing else Just <$> getOrCreateDH domainDhFile
 
-  certificate <- certify directoryUrl keys ((,) terms <$> email) (fileProvisioner challengeDir) certReq
+  let provision = fileProvisioner (const $ Just challengeDir)
+  certificate <- certify directoryUrl keys ((,) terms <$> email) provision certReq
 
   let save = saveCertificate issuerCert dh domainKeys domainCombinedFile domainCertFile
   mapM save certificate
