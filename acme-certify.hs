@@ -140,13 +140,11 @@ go CmdOpts { .. } = do
 go' :: URI -> URI -> Maybe EmailAddress -> X509 -> AcmeCertRequest -> IO (Either String ())
 go' directoryUrl terms email issuerCert acr@AcmeCertRequest{..} = do
   let domainKeyFile = acrCertificateDir </> "rsa.key"
-  let provision     = dispatchProvisioner acrDomains
 
   Just domainKeys <- getOrCreateKeys domainKeyFile
   dh <- saveDhParams acr
 
-  certReq <- genReq domainKeys $ map fst acrDomains
-  certificate <- certify directoryUrl acrUserKeys ((,) terms <$> email) provision certReq
+  certificate <- certify directoryUrl acrUserKeys ((,) terms <$> email) domainKeys acrDomains
   forM certificate $ saveCertificate issuerCert dh domainKeys acr
 
 saveDhParams :: AcmeCertRequest -> IO (Maybe DHP)

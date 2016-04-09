@@ -52,8 +52,12 @@ import           Text.Email.Validate
 
 -- The `certify` function
 
-certify :: URI -> Keys -> Maybe (URI, EmailAddress) -> DispatchHttpProvisioner -> CSR -> IO (Either String X509)
-certify directoryUrl keys reg provision certReq =
+certify :: URI -> Keys -> Maybe (URI, EmailAddress) -> Keys -> [(DomainName, HttpProvisioner)] -> IO (Either String X509)
+certify directoryUrl keys reg domainKeys domains = do
+
+  certReq <- genReq domainKeys $ map fst domains
+  let provision = dispatchProvisioner domains
+
   (mapM readDerX509 =<<) $ runACME directoryUrl keys $ do
     forM_ reg $ uncurry register >=> statusReport
 
@@ -64,7 +68,7 @@ certify directoryUrl keys reg provision certReq =
         cr dom = challengeRequest dom >>= statusReport >>= extractCR >>= performChallenge dom
 
     runResourceT $ do
-      challengeResultLinks <- forM (csrDomains certReq) cr
+      challengeResultLinks <- forM (map fst domains) cr
       lift . runExceptT $ do
         ExceptT $ pollResults challengeResultLinks <&> left ("certificate receipt was not attempted because a challenge failed: " ++)
         ExceptT $ retrieveCert certReq >>= statusReport <&> checkCertResponse
@@ -242,7 +246,7 @@ statusReport r = do
 
 -- OpenSSL operations
 
-data CSR = CSR { csrDomains :: [DomainName], csrData :: ByteString }
+data CSR = CSR { csrData :: ByteString }
 genReq :: Keys -> [DomainName] -> IO CSR
 genReq _ [] = error "genReq called with zero domains"
 genReq (Keys priv pub) domains@(domain:_) = withOpenSSL $ do
@@ -253,7 +257,7 @@ genReq (Keys priv pub) domains@(domain:_) = withOpenSSL $ do
   setPublicKey req pub
   void $ addExtensions req [(nidSubjectAltName, intercalate ", " (map (("DNS:" ++) . domainToString) domains))]
   signX509Req req priv (Just dig)
-  CSR domains . toStrict <$> writeX509ReqDER req
+  CSR . toStrict <$> writeX509ReqDER req
   where
     nidSubjectAltName = 85
 
