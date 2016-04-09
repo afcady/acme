@@ -6,6 +6,7 @@
 {-# LANGUAGE RecordWildCards      #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE ViewPatterns         #-}
 
 --------------------------------------------------------------------------------
 -- | Get a certificate from Let's Encrypt using the ACME protocol.
@@ -15,31 +16,35 @@
 module Main where
 
 import           BasePrelude
-import           Control.Lens              hiding ((&))
+import           Control.Lens                 hiding ((&))
+import           Control.Monad.IO.Class
+import           Control.Monad.Trans.Resource
 import           Data.Aeson.Lens
-import qualified Data.HashMap.Strict       as HashMap
-import           Data.Text                 (Text, unpack)
-import           Data.Yaml                 (Object)
-import qualified Data.Yaml.Config          as Config
-import           Data.Yaml.Config.Internal (Config (..))
-import           Network.ACME              (HttpProvisioner, Keys (..),
-                                            canProvision, certify,
-                                            ensureWritableDir, provisionViaFile,
-                                            readKeys, (</>))
-import           Network.ACME.Issuer       (letsEncryptX1CrossSigned)
+import qualified Data.HashMap.Strict          as HashMap
+import           Data.Text                    (Text, unpack)
+import           Data.Text.Encoding           (decodeUtf8)
+import           Data.Yaml                    (Object)
+import qualified Data.Yaml.Config             as Config
+import           Data.Yaml.Config.Internal    (Config (..))
+import           Network.ACME                 (HttpProvisioner, Keys (..),
+                                               canProvision, certify,
+                                               ensureWritableDir,
+                                               provisionViaFile, readKeys,
+                                               (</>))
+import           Network.ACME.Issuer          (letsEncryptX1CrossSigned)
 import           Network.URI
 import           OpenSSL
 import           OpenSSL.DH
 import           OpenSSL.PEM
 import           OpenSSL.RSA
-import           OpenSSL.X509              (X509)
-import           Options.Applicative       hiding (header)
-import qualified Options.Applicative       as Opt
+import           OpenSSL.X509                 (X509)
+import           Options.Applicative          hiding (header)
+import qualified Options.Applicative          as Opt
 import           System.Directory
 import           System.IO
 import           System.Posix.Escape
 import           System.Process
-import           Text.Domain.Validate      hiding (validate)
+import           Text.Domain.Validate         hiding (validate)
 import           Text.Email.Validate
 
 stagingDirectoryUrl, liveDirectoryUrl, defaultTerms :: URI
@@ -216,6 +221,13 @@ remoteTemp host fileName content = do
   return $ TempRemover $ mapM_ hClose [inp, out, err]
   where
     ssh cmd = runInteractiveProcess "ssh" (host : words "-- sh -c" ++ [escape cmd]) Nothing Nothing
+
+provisionViaRemoteFile :: String -> FilePath -> HttpProvisioner
+provisionViaRemoteFile = provision
+  where
+    provision host dir (bsToS -> tok) (bsToS -> thumbtoken) =
+      void $ allocate (liftIO $ remoteTemp host (dir </> tok) thumbtoken) removeTemp
+    bsToS = unpack . decodeUtf8
 
 runCertify :: CertifyOpts -> IO (Either String ())
 runCertify CertifyOpts{..} = do
