@@ -52,7 +52,7 @@ import           Text.Email.Validate
 
 -- The `certify` function
 
-certify :: URI -> Keys -> Maybe (URI, EmailAddress) -> HttpProvisioner -> CSR -> IO (Either String X509)
+certify :: URI -> Keys -> Maybe (URI, EmailAddress) -> DispatchHttpProvisioner -> CSR -> IO (Either String X509)
 certify directoryUrl keys reg provision certReq =
   (mapM readDerX509 =<<) $ runACME directoryUrl keys $ do
     forM_ reg $ uncurry register >=> statusReport
@@ -84,21 +84,21 @@ pollResults (link:links) = do
 
 -- Provisioner callback
 
-type HttpProvisioner = DomainName -> ByteString -> ByteString -> ResIO ()
-fileProvisioner :: (DomainName -> Maybe WritableDir) -> HttpProvisioner
-fileProvisioner challengeDir (challengeDir -> Just dir) tok thumbtoken = provisionViaFile dir tok thumbtoken
-fileProvisioner _ dom _ _ = liftIO $ fail $ "fileProvisioner: no writable directory for domain: " ++ show dom
+type DispatchHttpProvisioner = DomainName -> ByteString -> ByteString -> ResIO ()
+fileProvisioner :: WritableDir -> DispatchHttpProvisioner
+fileProvisioner challengeDir _ = provisionViaFile challengeDir
 
-type HttpProvisioner' = ByteString -> ByteString -> ResIO ()
-dispatchProvisioner :: (DomainName -> Maybe HttpProvisioner') -> HttpProvisioner
-dispatchProvisioner dispatch (dispatch -> Just provision) = provision
-dispatchProvisioner _ dom = const . const . liftIO $ fail errmsg
-  where errmsg = "No means specified to provision files over HTTP for domain: " ++ show dom
+type HttpProvisioner = ByteString -> ByteString -> ResIO ()
 
-dispatchProvisioner' :: [(DomainName, HttpProvisioner')] -> HttpProvisioner
-dispatchProvisioner' xs = dispatchProvisioner (`lookup` xs)
+dispatchProvisioner :: [(DomainName, HttpProvisioner)] -> DispatchHttpProvisioner
+dispatchProvisioner xs = dispatch (`lookup` xs)
+  where
+    dispatch :: (DomainName -> Maybe HttpProvisioner) -> DispatchHttpProvisioner
+    dispatch dispatchFunc (dispatchFunc -> Just provision) = provision
+    dispatch _ dom = const . const . liftIO $ fail errmsg
+      where errmsg = "No means specified to provision files over HTTP for domain: " ++ show dom
 
-provisionViaFile :: WritableDir -> HttpProvisioner'
+provisionViaFile :: WritableDir -> HttpProvisioner
 provisionViaFile dir tok thumbtoken = do
   void $ allocate (return f) removeFile
   liftIO $ BC.writeFile f thumbtoken
@@ -113,14 +113,16 @@ ensureWritableDir file name = do
   return $ WritableDir file
   where e n = error $ "Error: " ++ n ++ " is not writable"
 
-canProvision :: (DomainName -> Maybe WritableDir) -> DomainName -> IO Bool
-canProvision challengeDir domain = do
+canProvision :: DomainName -> HttpProvisioner -> IO Bool
+canProvision domain provision = do
   token <- (".test." ++) . show <$> getPOSIXTime
-
   r <- runResourceT $ do
-         fileProvisioner challengeDir domain (fromString token) (fromString token)
+         provision (fromString token) (fromString token)
          liftIO $ W.get $ show $ acmeChallengeURI domain (fromString token)
   return $ r ^. responseBody == fromString token
+
+canProvisionDir :: WritableDir -> DomainName -> IO Bool
+canProvisionDir challengeDir domain = canProvision domain (provisionViaFile challengeDir)
 
 -- The ACME monad
 

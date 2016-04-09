@@ -13,9 +13,9 @@
 module Main where
 
 import           BasePrelude
-import           Network.ACME         (HttpProvisioner', Keys (..),
-                                       canProvision, certify,
-                                       dispatchProvisioner', ensureWritableDir,
+import           Network.ACME         (HttpProvisioner, Keys (..),
+                                       canProvisionDir, certify,
+                                       dispatchProvisioner, ensureWritableDir,
                                        genReq, provisionViaFile, readKeys,
                                        (</>))
 import           Network.ACME.Issuer  (letsEncryptX1CrossSigned)
@@ -59,7 +59,7 @@ data CmdOpts = CmdOpts {
 }
 
 data AcmeCertRequest = AcmeCertRequest {
-      acrDomains        :: [(DomainName, HttpProvisioner')],
+      acrDomains        :: [(DomainName, HttpProvisioner)],
       acrSkipDH         :: Bool,
       acrCertificateDir :: FilePath,
       acrUserKeys       :: Keys
@@ -127,7 +127,7 @@ go CmdOpts { .. } = do
   Just keys <- getOrCreateKeys privKeyFile
 
   unless optSkipProvisionCheck $
-    forM_ requestDomains $ canProvision (const $ Just challengeDir) >=>
+    forM_ requestDomains $ canProvisionDir challengeDir >=>
       (`unless` error "Error: cannot provision files to web server via challenge directory")
 
   let req = AcmeCertRequest {..}
@@ -140,7 +140,7 @@ go CmdOpts { .. } = do
 go' :: URI -> URI -> Maybe EmailAddress -> X509 -> AcmeCertRequest -> IO (Either String ())
 go' directoryUrl terms email issuerCert acr@AcmeCertRequest{..} = do
   let domainKeyFile = acrCertificateDir </> "rsa.key"
-  let provision     = dispatchProvisioner' acrDomains
+  let provision     = dispatchProvisioner acrDomains
 
   Just domainKeys <- getOrCreateKeys domainKeyFile
   dh <- saveDhParams acr
