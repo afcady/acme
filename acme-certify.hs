@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE NamedFieldPuns      #-}
 {-# LANGUAGE NoImplicitPrelude   #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RecordWildCards     #-}
@@ -12,9 +13,9 @@
 module Main where
 
 import           BasePrelude
-import           Network.ACME         (Keys (..), canProvision, certify,
-                                       ensureWritableDir, fileProvisioner,
-                                       genReq, readKeys, (</>))
+import           Network.ACME         (Keys (..), WritableDir, canProvision,
+                                       certify, ensureWritableDir,
+                                       fileProvisioner, genReq, readKeys, (</>))
 import           Network.ACME.Issuer  (letsEncryptX1CrossSigned)
 import           Network.URI
 import           OpenSSL
@@ -53,6 +54,15 @@ data CmdOpts = CmdOpts {
       optSkipDH             :: Bool,
       optStaging            :: Bool,
       optSkipProvisionCheck :: Bool
+}
+
+data Provisioner = ProvisionDir WritableDir
+
+data AcmeCertRequest = AcmeCertRequest {
+      acrDomains        :: [(DomainName, Provisioner)],
+      acrSkipDH         :: Bool,
+      acrCertificateDir :: FilePath,
+      acrUserKeys       :: Keys
 }
 
 cmdopts :: Parser CmdOpts
@@ -102,10 +112,6 @@ go :: CmdOpts -> IO (Either String ())
 go CmdOpts { .. } = do
   let terms              = fromMaybe defaultTerms (join $ parseAbsoluteURI <$> optTerms)
       directoryUrl       = if optStaging then stagingDirectoryUrl else liveDirectoryUrl
-      domainKeyFile      = domainDir </> "rsa.key"
-      domainCombinedFile = domainDir </> "cert.combined.pem"
-      domainCertFile     = domainDir </> "cert.pem"
-      domainDhFile       = domainDir </> "dhparams.pem"
       domainDir          = fromMaybe (head optDomains) optDomainDir
       privKeyFile        = optKeyFile
       requestDomains     = map domainName' optDomains
@@ -118,29 +124,45 @@ go CmdOpts { .. } = do
   challengeDir <- ensureWritableDir optChallengeDir "challenge directory"
   void $ ensureWritableDir domainDir "domain directory"
 
-  Just domainKeys <- getOrCreateKeys domainKeyFile
   Just keys <- getOrCreateKeys privKeyFile
 
   unless optSkipProvisionCheck $
     forM_ requestDomains $ canProvision (const $ Just challengeDir) >=>
       (`unless` error "Error: cannot provision files to web server via challenge directory")
 
-  certReq <- genReq domainKeys requestDomains
+  let req = AcmeCertRequest {..}
+      acrDomains        = map (flip (,) (ProvisionDir challengeDir)) requestDomains
+      acrSkipDH         = optSkipDH
+      acrUserKeys       = keys
+      acrCertificateDir = domainDir
+  go' directoryUrl terms email issuerCert req
 
-  dh <- if optSkipDH then return Nothing else Just <$> getOrCreateDH domainDhFile
+go' :: URI -> URI -> Maybe EmailAddress -> X509 -> AcmeCertRequest -> IO (Either String ())
+go' directoryUrl terms email issuerCert acr@AcmeCertRequest{..} = do
+  let domainKeyFile      = acrCertificateDir </> "rsa.key"
+  let provision = fileProvisioner (fmap un . flip lookup acrDomains)
+      un (ProvisionDir w) = w
 
-  let provision = fileProvisioner (const $ Just challengeDir)
-  certificate <- certify directoryUrl keys ((,) terms <$> email) provision certReq
+  Just domainKeys <- getOrCreateKeys domainKeyFile
+  dh <- saveDhParams acr
 
-  let save = saveCertificate issuerCert dh domainKeys domainCombinedFile domainCertFile
-  mapM save certificate
+  certReq <- genReq domainKeys $ map fst acrDomains
+  certificate <- certify directoryUrl acrUserKeys ((,) terms <$> email) provision certReq
+  forM certificate $ saveCertificate issuerCert dh domainKeys acr
 
-saveCertificate :: X509 -> Maybe DHP -> Keys -> FilePath -> FilePath -> X509 -> IO ()
-saveCertificate issuerCert dh domainKeys domainCombinedFile domainCertFile = saveBoth
+saveDhParams :: AcmeCertRequest -> IO (Maybe DHP)
+saveDhParams AcmeCertRequest{acrSkipDH, acrCertificateDir} = do
+  let domainDhFile = acrCertificateDir </> "dhparams.pem"
+  if acrSkipDH then return Nothing else Just <$> getOrCreateDH domainDhFile
+
+saveCertificate :: X509 -> Maybe DHP -> Keys -> AcmeCertRequest -> X509 -> IO ()
+saveCertificate issuerCert dh domainKeys AcmeCertRequest{acrCertificateDir} = saveBoth
   where
     saveCombined  = combinedCert issuerCert dh domainKeys >=> writeFile domainCombinedFile
     savePEM       = writeX509                             >=> writeFile domainCertFile
     saveBoth x509 = savePEM x509 >> saveCombined x509
+    domainCombinedFile = acrCertificateDir </> "cert.combined.pem"
+    domainCertFile     = acrCertificateDir </> "cert.pem"
 
 genKey :: IO String
 genKey = withOpenSSL $ do
