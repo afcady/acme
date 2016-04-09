@@ -31,6 +31,8 @@ import           System.IO
 import           Text.Domain.Validate hiding (validate)
 import           Text.Email.Validate
 
+import qualified Data.Yaml.Config     as Yaml
+
 stagingDirectoryUrl, liveDirectoryUrl, defaultTerms :: URI
 Just liveDirectoryUrl    = parseAbsoluteURI "https://acme-v01.api.letsencrypt.org/directory"
 Just stagingDirectoryUrl = parseAbsoluteURI "https://acme-staging.api.letsencrypt.org/directory"
