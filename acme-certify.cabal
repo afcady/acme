@@ -29,7 +29,7 @@ executable acme
                        cryptonite, aeson, bytestring, base64-bytestring, SHA,
                        text, HsOpenSSL, optparse-applicative, time,
                        email-validate, network-uri, directory, yaml-config,
-                       yaml, unordered-containers, lens, lens-aeson
+                       yaml, unordered-containers, lens, lens-aeson, process, posix-escape
   default-language:    Haskell2010
 
 -- test-suite acme-certify-test

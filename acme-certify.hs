@@ -37,6 +37,8 @@ import           Options.Applicative       hiding (header)
 import qualified Options.Applicative       as Opt
 import           System.Directory
 import           System.IO
+import           System.Posix.Escape
+import           System.Process
 import           Text.Domain.Validate      hiding (validate)
 import           Text.Email.Validate
 
@@ -171,15 +173,21 @@ runUpdate UpdateOpts { .. } = do
 
 
   certSpecs :: [CertSpec] <- forM certReqDomains $ \(host, domains) -> do
-                                     provisioners <- mapM (chooseProvisioner host) domains
-                                     return $ certSpec globalCertificateDir keys (host, provisioners)
+                               provisioners <- mapM (chooseProvisioner host) domains
+                               return $ certSpec globalCertificateDir keys (host, provisioners)
 
   mapM_ print certSpecs
+
+  h <- remoteTemp "localhost" "/tmp/whatevs 'bro'" "this content\ncontains stuff'"
+  threadDelay $ 1000*1000*10
+  removeTemp h
+
   error "Error: unimplemented"
 
   where
     chooseProvisioner :: String -> String -> IO (DomainName, HttpProvisioner)
-    chooseProvisioner host domain = do -- TODO: implement
+    chooseProvisioner host domain      -- TODO: implement
+     = do
       let errmsg = "whatever"
       dir <- ensureWritableDir "/var/www/html/.well-known/acme-challenge/" errmsg
       return (domainName' domain, provisionViaFile dir)
@@ -196,6 +204,18 @@ runUpdate UpdateOpts { .. } = do
     combineSubdomains domain subs =
       map (<..> unpack domain) $ sort -- relying on the fact that '.' sorts first
        $ concat $ HashMap.lookup domain subs & toListOf (_Just . _String . to (words . unpack))
+
+data TempRemover = TempRemover { removeTemp :: IO () }
+remoteTemp :: String -> FilePath -> String -> IO TempRemover
+remoteTemp host fileName content = do
+  (inp,out,err,_pid) <- ssh $ unlines
+    [ "printf '%s' " ++ escape content ++ " > " ++ escape fileName
+    , "trap " ++ (escape . unwords) ["rm -f", escape fileName] ++ " EXIT"
+    , "read line"
+    ]
+  return $ TempRemover $ mapM_ hClose [inp, out, err]
+  where
+    ssh cmd = runInteractiveProcess "ssh" (host : words "-- sh -c" ++ [escape cmd]) Nothing Nothing
 
 runCertify :: CertifyOpts -> IO (Either String ())
 runCertify CertifyOpts{..} = do
