@@ -14,10 +14,9 @@ module Main where
 
 import           BasePrelude
 import           Network.ACME         (HttpProvisioner, Keys (..),
-                                       canProvisionDir, certify,
-                                       dispatchProvisioner, ensureWritableDir,
-                                       genReq, provisionViaFile, readKeys,
-                                       (</>))
+                                       canProvision, certify,
+                                       ensureWritableDir, provisionViaFile,
+                                       readKeys, (</>))
 import           Network.ACME.Issuer  (letsEncryptX1CrossSigned)
 import           Network.URI
 import           OpenSSL
@@ -105,7 +104,7 @@ cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <>
                         (long "skip-provision-check" <> help
                                              (unwords
                                                 [ "Don't test whether HTTP provisioning works before"
-                                                , "making ACME requests; only useful for testing."
+                                                , "making ACME requests"
                                                 ]))
 
 go :: CmdOpts -> IO (Either String ())
@@ -126,26 +125,25 @@ go CmdOpts { .. } = do
 
   Just keys <- getOrCreateKeys privKeyFile
 
-  unless optSkipProvisionCheck $
-    forM_ requestDomains $ canProvisionDir challengeDir >=>
-      (`unless` error "Error: cannot provision files to web server via challenge directory")
-
   let req = AcmeCertRequest {..}
       acrDomains        = map (flip (,) (provisionViaFile challengeDir)) requestDomains
       acrSkipDH         = optSkipDH
       acrUserKeys       = keys
       acrCertificateDir = domainDir
+
+  unless optSkipProvisionCheck $
+    forM_ acrDomains $ uncurry canProvision >=>
+      (`unless` error "Error: cannot provision files to web server")
+
   go' directoryUrl terms email issuerCert req
 
 go' :: URI -> URI -> Maybe EmailAddress -> X509 -> AcmeCertRequest -> IO (Either String ())
 go' directoryUrl terms email issuerCert acr@AcmeCertRequest{..} = do
-  let domainKeyFile = acrCertificateDir </> "rsa.key"
-
-  Just domainKeys <- getOrCreateKeys domainKeyFile
+  Just domainKeys <- getOrCreateKeys $ acrCertificateDir </> "rsa.key"
   dh <- saveDhParams acr
 
   certificate <- certify directoryUrl acrUserKeys ((,) terms <$> email) domainKeys acrDomains
-  forM certificate $ saveCertificate issuerCert dh domainKeys acr
+  for certificate $ saveCertificate issuerCert dh domainKeys acr
 
 saveDhParams :: AcmeCertRequest -> IO (Maybe DHP)
 saveDhParams AcmeCertRequest{acrSkipDH, acrCertificateDir} = do
@@ -155,9 +153,9 @@ saveDhParams AcmeCertRequest{acrSkipDH, acrCertificateDir} = do
 saveCertificate :: X509 -> Maybe DHP -> Keys -> AcmeCertRequest -> X509 -> IO ()
 saveCertificate issuerCert dh domainKeys AcmeCertRequest{acrCertificateDir} = saveBoth
   where
-    saveCombined  = combinedCert issuerCert dh domainKeys >=> writeFile domainCombinedFile
-    savePEM       = writeX509                             >=> writeFile domainCertFile
-    saveBoth x509 = savePEM x509 >> saveCombined x509
+    saveBoth x509      = savePEM x509 >> saveCombined x509
+    saveCombined       = combinedCert issuerCert dh domainKeys >=> writeFile domainCombinedFile
+    savePEM            = writeX509                             >=> writeFile domainCertFile
     domainCombinedFile = acrCertificateDir </> "cert.combined.pem"
     domainCertFile     = acrCertificateDir </> "cert.pem"
 
