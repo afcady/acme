@@ -13,25 +13,30 @@
 module Main where
 
 import           BasePrelude
-import           Network.ACME         (HttpProvisioner, Keys (..),
-                                       canProvision, certify,
-                                       ensureWritableDir, provisionViaFile,
-                                       readKeys, (</>))
-import           Network.ACME.Issuer  (letsEncryptX1CrossSigned)
+import           Control.Lens              hiding ((&))
+import           Data.Aeson.Lens
+import qualified Data.HashMap.Strict       as HashMap
+import           Data.Text                 (unpack)
+import           Data.Yaml                 (Object)
+import qualified Data.Yaml.Config          as Config
+import           Data.Yaml.Config.Internal (Config (..))
+import           Network.ACME              (HttpProvisioner, Keys (..),
+                                            canProvision, certify,
+                                            ensureWritableDir, provisionViaFile,
+                                            readKeys, (</>))
+import           Network.ACME.Issuer       (letsEncryptX1CrossSigned)
 import           Network.URI
 import           OpenSSL
 import           OpenSSL.DH
 import           OpenSSL.PEM
 import           OpenSSL.RSA
-import           OpenSSL.X509         (X509)
-import           Options.Applicative  hiding (header)
-import qualified Options.Applicative  as Opt
+import           OpenSSL.X509              (X509)
+import           Options.Applicative       hiding (header)
+import qualified Options.Applicative       as Opt
 import           System.Directory
 import           System.IO
-import           Text.Domain.Validate hiding (validate)
+import           Text.Domain.Validate      hiding (validate)
 import           Text.Email.Validate
-
-import qualified Data.Yaml.Config     as Yaml
 
 stagingDirectoryUrl, liveDirectoryUrl, defaultTerms :: URI
 Just liveDirectoryUrl    = parseAbsoluteURI "https://acme-v01.api.letsencrypt.org/directory"
@@ -135,9 +140,23 @@ certifyOpts = fmap Certify $
                                                          , "making ACME requests"
                                                          ]))
 
+-- lookup' :: (Monad m, FromJSON a) => Config.Key -> Config -> m a
+
+extractObject :: Config -> Object
+extractObject (Config _ o) = o
+
 runUpdate :: UpdateOpts -> IO ()
-runUpdate UpdateOpts{..} = do
-  error "test"
+runUpdate UpdateOpts { .. } = do
+  config <- Config.load "config.yaml"
+  hosts <- Config.subconfig "hosts" config
+  forM_ (Config.keys hosts) $ \host -> do
+    domains <- extractObject <$> (Config.subconfig host hosts >>= Config.subconfig "domains")
+    putStrLn $ unpack host ++ ": "
+    forM_ (HashMap.keys domains) $ \domain -> do
+      let subdomains = map (<..> unpack domain) $ sort $ concat $ HashMap.lookup domain domains & toListOf (_Just . _String . to (words . unpack))
+      putStrLn $ "  " ++ unwords subdomains
+      putStrLn ""
+  error "Error: unimplemented"
 
 runCertify :: CertifyOpts -> IO (Either String ())
 runCertify CertifyOpts{..} = do
@@ -232,3 +251,6 @@ otherwiseM :: Monad m => m Bool -> m () -> m ()
 a `otherwiseM` b = a >>= flip unless b
 infixl 0 `otherwiseM`
 
+(<..>) :: String -> String -> String
+"." <..> dom = dom
+sub <..> dom = sub ++ "." ++ dom

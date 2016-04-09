@@ -28,7 +28,8 @@ executable acme
   build-depends:       base, base-prelude, acme-certify,
                        cryptonite, aeson, bytestring, base64-bytestring, SHA,
                        text, HsOpenSSL, optparse-applicative, time,
-                       email-validate, network-uri, directory, yaml-config
+                       email-validate, network-uri, directory, yaml-config,
+                       yaml, unordered-containers, lens, lens-aeson
   default-language:    Haskell2010
 
 -- test-suite acme-certify-test
