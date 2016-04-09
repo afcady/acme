@@ -1,9 +1,11 @@
-{-# LANGUAGE FlexibleContexts    #-}
-{-# LANGUAGE NamedFieldPuns      #-}
-{-# LANGUAGE NoImplicitPrelude   #-}
-{-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE RecordWildCards     #-}
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleContexts     #-}
+{-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE NamedFieldPuns       #-}
+{-# LANGUAGE NoImplicitPrelude    #-}
+{-# LANGUAGE OverloadedStrings    #-}
+{-# LANGUAGE RecordWildCards      #-}
+{-# LANGUAGE ScopedTypeVariables  #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 
 --------------------------------------------------------------------------------
 -- | Get a certificate from Let's Encrypt using the ACME protocol.
@@ -16,7 +18,7 @@ import           BasePrelude
 import           Control.Lens              hiding ((&))
 import           Data.Aeson.Lens
 import qualified Data.HashMap.Strict       as HashMap
-import           Data.Text                 (unpack)
+import           Data.Text                 (Text, unpack)
 import           Data.Yaml                 (Object)
 import qualified Data.Yaml.Config          as Config
 import           Data.Yaml.Config.Internal (Config (..))
@@ -83,12 +85,17 @@ data UpdateOpts = UpdateOpts {
       updateConfigFile :: Maybe FilePath
 }
 
-data AcmeCertRequest = AcmeCertRequest {
-      acrDomains        :: [(DomainName, HttpProvisioner)],
-      acrSkipDH         :: Bool,
-      acrCertificateDir :: FilePath,
-      acrUserKeys       :: Keys
-}
+instance Show HttpProvisioner where
+    show _ = "<code>"
+instance Show Keys where
+    show _ = "<keys>"
+
+data CertSpec = CertSpec {
+      csDomains        :: [(DomainName, HttpProvisioner)],
+      csSkipDH         :: Bool,
+      csCertificateDir :: FilePath,
+      csUserKeys       :: Keys
+} deriving Show
 
 updateOpts :: Parser Command
 updateOpts = fmap Update $
@@ -148,15 +155,47 @@ extractObject (Config _ o) = o
 runUpdate :: UpdateOpts -> IO ()
 runUpdate UpdateOpts { .. } = do
   config <- Config.load "config.yaml"
-  hosts <- Config.subconfig "hosts" config
-  forM_ (Config.keys hosts) $ \host -> do
-    domains <- extractObject <$> (Config.subconfig host hosts >>= Config.subconfig "domains")
-    putStrLn $ unpack host ++ ": "
-    forM_ (HashMap.keys domains) $ \domain -> do
-      let subdomains = map (<..> unpack domain) $ sort $ concat $ HashMap.lookup domain domains & toListOf (_Just . _String . to (words . unpack))
-      putStrLn $ "  " ++ unwords subdomains
-      putStrLn ""
+  hostsConfig <- Config.subconfig "hosts" config
+  certReqDomains <- fmap concat <$> forM (Config.keys hostsConfig) $ \host ->
+                      do
+                        hostParts <- (Config.subconfig host hostsConfig >>= Config.subconfig
+                                                                              "domains") <&> extractObject
+                        forM (HashMap.keys hostParts) $ \domain ->
+                          return (unpack host, combineSubdomains domain hostParts)
+  forM_ certReqDomains print
+
+  globalCertificateDir <- getHomeDirectory <&> (</> ".acme/test")
+  createDirectoryIfMissing True globalCertificateDir
+
+  Just keys <- getOrCreateKeys $ globalCertificateDir </> "rsa.key"
+
+
+  certSpecs :: [CertSpec] <- forM certReqDomains $ \(host, domains) -> do
+                                     provisioners <- mapM (chooseProvisioner host) domains
+                                     return $ certSpec globalCertificateDir keys (host, provisioners)
+
+  mapM_ print certSpecs
   error "Error: unimplemented"
+
+  where
+    chooseProvisioner :: String -> String -> IO (DomainName, HttpProvisioner)
+    chooseProvisioner host domain = do -- TODO: implement
+      let errmsg = "whatever"
+      dir <- ensureWritableDir "/var/www/html/.well-known/acme-challenge/" errmsg
+      return (domainName' domain, provisionViaFile dir)
+
+    certSpec :: FilePath -> Keys -> (String, [(DomainName, HttpProvisioner)]) -> CertSpec
+    certSpec baseDir keys (host, requestDomains) = CertSpec { .. }
+      where
+        csDomains = requestDomains
+        csSkipDH = True -- TODO: implement
+        csUserKeys = keys
+        csCertificateDir = baseDir </> host </> (show . fst) (head requestDomains)
+
+    combineSubdomains :: AsPrimitive v => Text -> HashMap.HashMap Text v -> [String]
+    combineSubdomains domain subs =
+      map (<..> unpack domain) $ sort -- relying on the fact that '.' sorts first
+       $ concat $ HashMap.lookup domain subs & toListOf (_Just . _String . to (words . unpack))
 
 runCertify :: CertifyOpts -> IO (Either String ())
 runCertify CertifyOpts{..} = do
@@ -170,45 +209,45 @@ runCertify CertifyOpts{..} = do
   issuerCert <- readX509 letsEncryptX1CrossSigned
 
   seq email (return ())
-  doesDirectoryExist domainDir `otherwiseM` createDirectory domainDir
+  createDirectoryIfMissing False domainDir
   challengeDir <- ensureWritableDir optChallengeDir "challenge directory"
   void $ ensureWritableDir domainDir "domain directory"
 
   Just keys <- getOrCreateKeys privKeyFile
 
-  let req = AcmeCertRequest {..}
-      acrDomains        = map (flip (,) (provisionViaFile challengeDir)) requestDomains
-      acrSkipDH         = optSkipDH
-      acrUserKeys       = keys
-      acrCertificateDir = domainDir
+  let req = CertSpec {..}
+      csDomains        = map (flip (,) (provisionViaFile challengeDir)) requestDomains
+      csSkipDH         = optSkipDH
+      csUserKeys       = keys
+      csCertificateDir = domainDir
 
   unless optSkipProvisionCheck $
-    forM_ acrDomains $ uncurry canProvision >=>
+    forM_ csDomains $ uncurry canProvision >=>
       (`unless` error "Error: cannot provision files to web server")
 
   go' directoryUrl terms email issuerCert req
 
-go' :: URI -> URI -> Maybe EmailAddress -> X509 -> AcmeCertRequest -> IO (Either String ())
-go' directoryUrl terms email issuerCert acr@AcmeCertRequest{..} = do
-  Just domainKeys <- getOrCreateKeys $ acrCertificateDir </> "rsa.key"
-  dh <- saveDhParams acr
+go' :: URI -> URI -> Maybe EmailAddress -> X509 -> CertSpec -> IO (Either String ())
+go' directoryUrl terms email issuerCert cs@CertSpec{..} = do
+  Just domainKeys <- getOrCreateKeys $ csCertificateDir </> "rsa.key"
+  dh <- saveDhParams cs
 
-  certificate <- certify directoryUrl acrUserKeys ((,) terms <$> email) domainKeys acrDomains
-  for certificate $ saveCertificate issuerCert dh domainKeys acr
+  certificate <- certify directoryUrl csUserKeys ((,) terms <$> email) domainKeys csDomains
+  for certificate $ saveCertificate issuerCert dh domainKeys cs
 
-saveDhParams :: AcmeCertRequest -> IO (Maybe DHP)
-saveDhParams AcmeCertRequest{acrSkipDH, acrCertificateDir} = do
-  let domainDhFile = acrCertificateDir </> "dhparams.pem"
-  if acrSkipDH then return Nothing else Just <$> getOrCreateDH domainDhFile
+saveDhParams :: CertSpec -> IO (Maybe DHP)
+saveDhParams CertSpec{csSkipDH, csCertificateDir} = do
+  let domainDhFile = csCertificateDir </> "dhparams.pem"
+  if csSkipDH then return Nothing else Just <$> getOrCreateDH domainDhFile
 
-saveCertificate :: X509 -> Maybe DHP -> Keys -> AcmeCertRequest -> X509 -> IO ()
-saveCertificate issuerCert dh domainKeys AcmeCertRequest{acrCertificateDir} = saveBoth
+saveCertificate :: X509 -> Maybe DHP -> Keys -> CertSpec -> X509 -> IO ()
+saveCertificate issuerCert dh domainKeys CertSpec{csCertificateDir} = saveBoth
   where
     saveBoth x509      = savePEM x509 >> saveCombined x509
     saveCombined       = combinedCert issuerCert dh domainKeys >=> writeFile domainCombinedFile
     savePEM            = writeX509                             >=> writeFile domainCertFile
-    domainCombinedFile = acrCertificateDir </> "cert.combined.pem"
-    domainCertFile     = acrCertificateDir </> "cert.pem"
+    domainCombinedFile = csCertificateDir </> "cert.combined.pem"
+    domainCertFile     = csCertificateDir </> "cert.pem"
 
 genKey :: IO String
 genKey = withOpenSSL $ do
