@@ -35,7 +35,7 @@ Just stagingDirectoryUrl = parseAbsoluteURI "https://acme-staging.api.letsencryp
 Just defaultTerms        = parseAbsoluteURI "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
 
 main :: IO ()
-main = execParser opts >>= go
+main = execParser opts >>= go >>= either (error . ("Error: " ++)) return
   where
     opts = info (helper <*> cmdopts) (fullDesc <> progDesc detailedDescription <> Opt.header "Let's Encrypt! ACME client")
     detailedDescription = unwords
@@ -98,7 +98,7 @@ cmdopts = CmdOpts <$> strOption (long "key" <> metavar "FILE" <>
                                                 , "making ACME requests; only useful for testing."
                                                 ]))
 
-go :: CmdOpts -> IO ()
+go :: CmdOpts -> IO (Either String ())
 go CmdOpts { .. } = do
   let terms              = fromMaybe defaultTerms (join $ parseAbsoluteURI <$> optTerms)
       directoryUrl       = if optStaging then stagingDirectoryUrl else liveDirectoryUrl
@@ -131,11 +131,15 @@ go CmdOpts { .. } = do
 
   certificate <- certify directoryUrl keys ((,) terms <$> email) (fileProvisioner challengeDir) certReq
 
-  let saveCombined  = combinedCert issuerCert dh domainKeys >=> writeFile domainCombinedFile
-      savePEM       = writeX509                             >=> writeFile domainCertFile
-      saveBoth x509 = savePEM x509 >> saveCombined x509
+  let save = saveCertificate issuerCert dh domainKeys domainCombinedFile domainCertFile
+  mapM save certificate
 
-  either (error . ("Error: " ++)) saveBoth certificate
+saveCertificate :: X509 -> Maybe DHP -> Keys -> FilePath -> FilePath -> X509 -> IO ()
+saveCertificate issuerCert dh domainKeys domainCombinedFile domainCertFile = saveBoth
+  where
+    saveCombined  = combinedCert issuerCert dh domainKeys >=> writeFile domainCombinedFile
+    savePEM       = writeX509                             >=> writeFile domainCertFile
+    saveBoth x509 = savePEM x509 >> saveCombined x509
 
 genKey :: IO String
 genKey = withOpenSSL $ do
