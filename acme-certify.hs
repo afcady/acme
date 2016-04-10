@@ -91,7 +91,9 @@ data CertifyOpts = CertifyOpts {
 data UpdateOpts = UpdateOpts {
       updateConfigFile :: Maybe FilePath,
       updateHosts :: [String],
-      updateStaging :: Bool
+      updateStaging :: Bool,
+      updateDryRun :: Bool,
+      updateDoPrivisionCheck :: Bool
 }
 
 instance Show HttpProvisioner where
@@ -114,12 +116,24 @@ updateOpts = fmap Update $
                        metavar "FILENAME" <>
                        help "location of YAML configuration file"))
              <*> many (argument str (metavar "HOSTS"))
+             <*> stagingSwitch
              <*> switch
-                   (long "staging" <> help
+                   (long "dry-run" <> help
                                         (unwords
-                                           [ "Use staging servers instead of live servers"
-                                           , "(generated certificates will not be trusted!)"
+                                           [ "Do not fetch any certificates; only tests"
+                                           , "configuration file and http provisioning"
                                            ]))
+             <*> pure True
+
+-- TODO: global options
+stagingSwitch :: Parser Bool
+stagingSwitch =
+  switch
+    (long "staging" <> help
+                         (unwords
+                            [ "Use staging servers instead of live servers"
+                            , "(generated certificates will not be trusted!)"
+                            ]))
 
 certifyOpts :: Parser Command
 certifyOpts = fmap Certify $
@@ -150,23 +164,13 @@ certifyOpts = fmap Certify $
               <*> optional (strOption (long "terms" <> metavar "URL" <>
                                        help "The terms param of the registration request"))
               <*> switch (long "skip-dhparams" <> help "Don't generate DH params for combined cert")
-              <*> switch
-                    (long "staging" <> help
-                                         (unwords
-                                            [ "Use staging servers instead of live servers"
-                                            , "(generated certificates will not be trusted!)"
-                                            ]))
+              <*> stagingSwitch
               <*> switch
                     (long "skip-provision-check" <> help
                                                       (unwords
                                                          [ "Don't test whether HTTP provisioning works before"
                                                          , "making ACME requests"
                                                          ]))
-
--- lookup' :: (Monad m, FromJSON a) => Config.Key -> Config -> m a
-
-extractObject :: Config -> Object
-extractObject (Config _ o) = o
 
 runUpdate :: UpdateOpts -> IO ()
 runUpdate UpdateOpts { .. } = do
@@ -195,20 +199,27 @@ runUpdate UpdateOpts { .. } = do
 
   let wantedCertSpecs = filter (wantUpdate . view _1) validCertSpecs & map (view _3)
 
-  when True $
+  when updateDoPrivisionCheck $
     forM_ wantedCertSpecs $ \spec ->
       forM_ (csDomains spec) $ uncurry canProvision >=>
         (`unless` error "Error: cannot provision files to web server")
+
 
   forM_ wantedCertSpecs $ \spec -> do
 
     let terms              = defaultTerms
         directoryUrl       = if updateStaging then stagingDirectoryUrl else liveDirectoryUrl
         email              = emailAddress $ encodeUtf8 . pack $ "root@" ++ (domainToString . fst . head) (csDomains spec)
-    print =<< fetchCertificate directoryUrl terms email issuerCert spec
 
+    if updateDryRun
+    then putStrLn $ "Dry run; would have fetched certificate: " ++ show spec
+    else print =<< fetchCertificate directoryUrl terms email issuerCert spec
 
   where
+    extractObject :: Config -> Object
+    extractObject (Config _ o) = o
+
+    wantUpdate :: String -> Bool
     wantUpdate h = null updateHosts || isJust (find (== h) updateHosts)
 
     dereference :: [(DomainName, Either DomainName HttpProvisioner)] -> Maybe [(DomainName, HttpProvisioner)]
