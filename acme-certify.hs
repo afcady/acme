@@ -163,12 +163,10 @@ runUpdate :: UpdateOpts -> IO ()
 runUpdate UpdateOpts { .. } = do
   config <- Config.load "config.yaml"
   hostsConfig <- Config.subconfig "hosts" config
-  certReqDomains <- fmap concat <$> forM (Config.keys hostsConfig) $ \host ->
-                      do
-                        hostParts <- (Config.subconfig host hostsConfig >>= Config.subconfig
-                                                                              "domains") <&> extractObject
-                        forM (HashMap.keys hostParts) $ \domain ->
-                          return (unpack host, combineSubdomains domain hostParts)
+  certReqDomains <- fmap concat $ forM (Config.keys hostsConfig) $ \host -> do
+                        hostParts <- (Config.subconfig host hostsConfig >>= Config.subconfig "domains") <&> extractObject
+                        return $ flip map (HashMap.keys hostParts) $ \domain ->
+                          (unpack host, domainName' $ unpack domain, combineSubdomains domain hostParts)
 
   when False $ forM_ certReqDomains print
 
@@ -177,8 +175,8 @@ runUpdate UpdateOpts { .. } = do
 
   Just keys <- getOrCreateKeys $ globalCertificateDir </> "rsa.key"
 
-  let certSpecs = flip map certReqDomains $ \(host, domains) -> fmap ((,) host) $
-                    dereference (map (chooseProvisioner host) domains) <&> certSpec globalCertificateDir keys host
+  let certSpecs = flip map certReqDomains $ \(host, domain, domains) -> fmap ((,) host) $
+                    dereference (map (chooseProvisioner host) domains) <&> certSpec globalCertificateDir keys host domain
 
   when False $ do
     mapM_ print certSpecs
@@ -189,19 +187,19 @@ runUpdate UpdateOpts { .. } = do
 
   issuerCert <- readX509 letsEncryptX1CrossSigned
 
-  forM_ certReqDomains $ \(host, domains) -> do
-    when (host == "fifty") $ do
-      putStrLn host
-      let Just spec = dereference (map (chooseProvisioner host) domains) <&> certSpec globalCertificateDir keys host
-      print spec
+  forM_ certReqDomains $ \(host, domain, domains) -> when (host == "fifty") $ do
+    putStrLn host
+    let Just spec = dereference (map (chooseProvisioner host) domains) <&> certSpec globalCertificateDir keys host domain
+    print spec
 
-      when True $
-        forM_ (csDomains spec) $ uncurry canProvision >=>
-          (`unless` error "Error: cannot provision files to web server")
-      let terms              = defaultTerms
-          directoryUrl       = stagingDirectoryUrl
-          email              = emailAddress $ encodeUtf8 . pack $ "root@" ++ (domainToString . fst . head) (csDomains spec)
-      print =<< fetchCertificate directoryUrl terms email issuerCert spec
+    when True $
+      forM_ (csDomains spec) $ uncurry canProvision >=>
+        (`unless` error "Error: cannot provision files to web server")
+
+    let terms              = defaultTerms
+        directoryUrl       = stagingDirectoryUrl
+        email              = emailAddress $ encodeUtf8 . pack $ "root@" ++ (domainToString . fst . head) (csDomains spec)
+    print =<< fetchCertificate directoryUrl terms email issuerCert spec
 
   error "Error: unimplemented"
   where
@@ -217,18 +215,18 @@ runUpdate UpdateOpts { .. } = do
     chooseProvisioner host (VHostSpec domain pathInfo) =
       (domain, provisionViaRemoteFile host <$> pathInfo)
 
-    certSpec :: FilePath -> Keys -> String -> [(DomainName, HttpProvisioner)] -> CertSpec
-    certSpec baseDir keys host requestDomains = CertSpec { .. }
+    certSpec :: FilePath -> Keys -> String -> DomainName -> [(DomainName, HttpProvisioner)] -> CertSpec
+    certSpec baseDir keys host domain requestDomains = CertSpec { .. }
       where
         csDomains = requestDomains
         csSkipDH = True -- TODO: implement
         csUserKeys = keys
-        csCertificateDir = baseDir </> host </> (domainToString . fst) (head requestDomains)
+        csCertificateDir = baseDir </> host </> domainToString domain
 
     combineSubdomains :: AsPrimitive v => Text -> HashMap.HashMap Text v -> [VHostSpec]
     combineSubdomains domain subs =
       map (makeVHostSpec (domainName' $ unpack domain)) $
-        sort -- relying on the fact that '.' sorts first
+        sort -- '.' sorts first
          $ concat $ HashMap.lookup domain subs & toListOf (_Just . _String . to (words . unpack))
 
 domainToString :: DomainName -> String
@@ -266,6 +264,7 @@ remoteTemp host fileName content = do
   where
     ssh cmd = runInteractiveProcess "ssh" (host : words "-- sh -c" ++ [escape cmd]) Nothing Nothing
 
+dirname :: String -> String
 dirname = dropWhileEnd (/= '/')
 
 provisionViaRemoteFile :: String -> FilePath -> HttpProvisioner
