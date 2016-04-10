@@ -252,20 +252,19 @@ domainToString = unpack . decodeUtf8 . Text.Domain.Validate.toByteString
 
 data VHostSpec = VHostSpec DomainName (Either DomainName FilePath) deriving Show
 makeVHostSpec :: DomainName -> String -> VHostSpec
-makeVHostSpec = make
+makeVHostSpec parentDomain vhostSpecStr = VHostSpec (domainName' vhostName) (left domainName' spec)
   where
-    make (domainToString -> parentDomain) (splitSpec -> (sub, spec)) =
-      VHostSpec (domainName' $ sub <..> parentDomain) (makeRef spec)
-      where
-        makeRef :: Either String FilePath -> Either DomainName FilePath
-        makeRef = left (\refSub -> domainName' $ refSub <..> parentDomain)
+    vhostName = appendParent sub
+    (sub, spec) = splitSpec vhostSpecStr
 
     splitSpec :: String -> (String, Either String FilePath)
     splitSpec (break (== '{') -> (a, b)) = (,) a $
       case b of
         ('{':c@('/':_)) -> Right $ takeWhile (/= '}') c
-        ('{':c)         -> Left  $ takeWhile (/= '}') c
-        _               -> Right $ "/srv" </> a </> "public_html"
+        ('{':c)         -> Left  $ takeWhile (/= '}') c & appendParent
+        _               -> Right $ "/srv" </> vhostName </> "public_html"
+
+    appendParent = (<..> domainToString parentDomain)
 
 data TempRemover = TempRemover { removeTemp :: IO () }
 remoteTemp :: String -> FilePath -> String -> IO TempRemover
