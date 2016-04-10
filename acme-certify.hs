@@ -21,8 +21,8 @@ import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Resource
 import           Data.Aeson.Lens
 import qualified Data.HashMap.Strict          as HashMap
-import           Data.Text                    (Text, unpack)
-import           Data.Text.Encoding           (decodeUtf8)
+import           Data.Text                    (Text, unpack, pack)
+import           Data.Text.Encoding           (decodeUtf8, encodeUtf8)
 import           Data.Yaml                    (Object)
 import qualified Data.Yaml.Config             as Config
 import           Data.Yaml.Config.Internal    (Config (..))
@@ -187,13 +187,23 @@ runUpdate UpdateOpts { .. } = do
     threadDelay $ 1000 * 1000 * 10
     removeTemp h
 
+  issuerCert <- readX509 letsEncryptX1CrossSigned
+
   forM_ certReqDomains $ \(host, domains) -> do
     when (host == "fifty") $ do
       putStrLn host
-      let cs = dereference (map (chooseProvisioner host) domains) <&> certSpec globalCertificateDir keys host
-      print cs
-      error "Error: unimplemented"
+      let Just spec = dereference (map (chooseProvisioner host) domains) <&> certSpec globalCertificateDir keys host
+      print spec
 
+      when True $
+        forM_ (csDomains spec) $ uncurry canProvision >=>
+          (`unless` error "Error: cannot provision files to web server")
+      let terms              = defaultTerms
+          directoryUrl       = stagingDirectoryUrl
+          email              = emailAddress $ encodeUtf8 . pack $ "root@" ++ (domainToString . fst . head) (csDomains spec)
+      print =<< fetchCertificate directoryUrl terms email issuerCert spec
+
+  error "Error: unimplemented"
   where
 
     dereference :: [(DomainName, Either DomainName HttpProvisioner)] -> Maybe [(DomainName, HttpProvisioner)]
@@ -245,13 +255,18 @@ data TempRemover = TempRemover { removeTemp :: IO () }
 remoteTemp :: String -> FilePath -> String -> IO TempRemover
 remoteTemp host fileName content = do
   (inp,out,err,_pid) <- ssh $ unlines
-    [ "printf '%s' " ++ escape content ++ " > " ++ escape fileName
+    [ "mkdir -p " ++ escape (dirname fileName)
+    , "printf '%s' " ++ escape content ++ " > " ++ escape fileName
+    , "echo provisioned."
     , "trap " ++ (escape . unwords) ["rm -f", escape fileName] ++ " EXIT"
     , "read line"
     ]
+  void $ hGetLine out
   return $ TempRemover $ mapM_ hClose [inp, out, err]
   where
     ssh cmd = runInteractiveProcess "ssh" (host : words "-- sh -c" ++ [escape cmd]) Nothing Nothing
+
+dirname = dropWhileEnd (/= '/')
 
 provisionViaRemoteFile :: String -> FilePath -> HttpProvisioner
 provisionViaRemoteFile = provision
@@ -279,7 +294,7 @@ runCertify CertifyOpts{..} = do
 
   Just keys <- getOrCreateKeys privKeyFile
 
-  let req = CertSpec {..}
+  let spec = CertSpec {..}
       csDomains        = map (flip (,) (provisionViaFile challengeDir)) requestDomains
       csSkipDH         = optSkipDH
       csUserKeys       = keys
@@ -289,7 +304,7 @@ runCertify CertifyOpts{..} = do
     forM_ csDomains $ uncurry canProvision >=>
       (`unless` error "Error: cannot provision files to web server")
 
-  fetchCertificate directoryUrl terms email issuerCert req
+  fetchCertificate directoryUrl terms email issuerCert spec
 
 fetchCertificate :: URI -> URI -> Maybe EmailAddress -> X509 -> CertSpec -> IO (Either String ())
 fetchCertificate directoryUrl terms email issuerCert cs@CertSpec{..} = do
@@ -321,6 +336,7 @@ genKey = withOpenSSL $ do
 getOrCreate :: IO String -> (String -> IO a) -> FilePath -> IO a
 getOrCreate gen parse file = do
   exists <- doesFileExist file
+  createDirectoryIfMissing True (dirname file)
   parse =<< if exists then readFile file else gen >>= save file
   where
     save f x = writeFile f x >> return x
