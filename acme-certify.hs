@@ -90,7 +90,8 @@ data CertifyOpts = CertifyOpts {
 
 data UpdateOpts = UpdateOpts {
       updateConfigFile :: Maybe FilePath,
-      updateHosts :: [String]
+      updateHosts :: [String],
+      updateStaging :: Bool
 }
 
 instance Show HttpProvisioner where
@@ -113,6 +114,12 @@ updateOpts = fmap Update $
                        metavar "FILENAME" <>
                        help "location of YAML configuration file"))
              <*> many (argument str (metavar "HOSTS"))
+             <*> switch
+                   (long "staging" <> help
+                                        (unwords
+                                           [ "Use staging servers instead of live servers"
+                                           , "(generated certificates will not be trusted!)"
+                                           ]))
 
 certifyOpts :: Parser Command
 certifyOpts = fmap Certify $
@@ -172,7 +179,7 @@ runUpdate UpdateOpts { .. } = do
                         return $ flip map (HashMap.keys hostParts) $ \domain ->
                           (unpack host, domainName' $ unpack domain, combineSubdomains domain hostParts)
 
-  globalCertificateDir <- getHomeDirectory <&> (</> ".acme/test")
+  globalCertificateDir <- getHomeDirectory <&> (</> if updateStaging then ".acme/test-certs" else ".acme/certs")
   createDirectoryIfMissing True globalCertificateDir
 
   Just keys <- getOrCreateKeys $ globalCertificateDir </> "rsa.key"
@@ -196,7 +203,7 @@ runUpdate UpdateOpts { .. } = do
   forM_ wantedCertSpecs $ \spec -> do
 
     let terms              = defaultTerms
-        directoryUrl       = stagingDirectoryUrl
+        directoryUrl       = if updateStaging then stagingDirectoryUrl else liveDirectoryUrl
         email              = emailAddress $ encodeUtf8 . pack $ "root@" ++ (domainToString . fst . head) (csDomains spec)
     print =<< fetchCertificate directoryUrl terms email issuerCert spec
 
