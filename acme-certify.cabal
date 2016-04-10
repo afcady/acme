@@ -18,7 +18,7 @@ library
                        cryptonite, aeson, bytestring, base64-bytestring, SHA,
                        mtl, text, HsOpenSSL, wreq, lens, lens-aeson, time,
                        email-validate, pipes, directory, network-uri, errors,
-                       resourcet, file-embed
+                       resourcet, file-embed, http-conduit, connection
   default-language:    Haskell2010
 
 executable acme

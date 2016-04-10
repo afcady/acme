@@ -31,6 +31,9 @@ import qualified Data.Text                    as T
 import           Data.Text.Encoding           (decodeUtf8, encodeUtf8)
 import           Data.Time.Clock.POSIX        (getPOSIXTime)
 import           Network.ACME.Encoding
+import           Network.Connection
+import           Network.HTTP.Conduit         (Manager, mkManagerSettings,
+                                               newManager)
 import           Network.URI
 import           Network.Wreq                 (Response, checkStatus, defaults,
                                                responseBody, responseHeader,
@@ -120,10 +123,23 @@ ensureWritableDir file name = do
 canProvision :: DomainName -> HttpProvisioner -> IO Bool
 canProvision domain provision = do
   token <- (".test." ++) . show <$> getPOSIXTime
+  clientManager <- noSSLVerifyManager
+  let opts = defaults & W.manager .~ Right clientManager
   r <- runResourceT $ do
          provision (fromString token) (fromString token)
-         liftIO $ W.get $ show $ acmeChallengeURI domain (fromString token)
+         liftIO $ W.getWith opts $ show $ acmeChallengeURI domain (fromString token)
   return $ r ^. responseBody == fromString token
+
+-- From http://stackoverflow.com/questions/21310690/
+-- disable-ssl-tls-certificate-validation-in-network-http-conduit/21310691#21310691
+noSSLVerifyManager :: IO Manager
+noSSLVerifyManager = newManager $ mkManagerSettings tlsSettings Nothing
+  where
+    tlsSettings = TLSSettingsSimple
+      { settingDisableCertificateValidation = True
+      , settingDisableSession = False
+      , settingUseServerName = True
+      }
 
 canProvisionDir :: WritableDir -> DomainName -> IO Bool
 canProvisionDir challengeDir domain = canProvision domain (provisionViaFile challengeDir)
