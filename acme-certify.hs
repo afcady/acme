@@ -16,7 +16,7 @@
 module Main where
 
 import           BasePrelude
-import           Control.Lens                 hiding ((&))
+import           Control.Lens                 hiding ((&), argument)
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Resource
 import           Data.Aeson.Lens
@@ -89,7 +89,8 @@ data CertifyOpts = CertifyOpts {
 }
 
 data UpdateOpts = UpdateOpts {
-      updateConfigFile :: Maybe FilePath
+      updateConfigFile :: Maybe FilePath,
+      updateHosts :: [String]
 }
 
 instance Show HttpProvisioner where
@@ -111,6 +112,7 @@ updateOpts = fmap Update $
                       (long "config" <>
                        metavar "FILENAME" <>
                        help "location of YAML configuration file"))
+             <*> many (argument str (metavar "HOSTS"))
 
 certifyOpts :: Parser Command
 certifyOpts = fmap Certify $
@@ -187,7 +189,9 @@ runUpdate UpdateOpts { .. } = do
 
   issuerCert <- readX509 letsEncryptX1CrossSigned
 
-  forM_ certReqDomains $ \(host, domain, domains) -> when (host == "fifty") $ do
+  let wantUpdate h = null updateHosts || isJust (find (== h) updateHosts)
+
+  forM_ certReqDomains $ \(host, domain, domains) -> when (wantUpdate host) $ do
     putStrLn host
     let Just spec = dereference (map (chooseProvisioner host) domains) <&> certSpec globalCertificateDir keys host domain
     print spec
