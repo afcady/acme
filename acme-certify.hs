@@ -163,6 +163,8 @@ extractObject (Config _ o) = o
 
 runUpdate :: UpdateOpts -> IO ()
 runUpdate UpdateOpts { .. } = do
+  issuerCert <- readX509 letsEncryptX1CrossSigned
+
   config <- Config.load "config.yaml"
   hostsConfig <- Config.subconfig "hosts" config
   certReqDomains <- fmap concat $ forM (Config.keys hostsConfig) $ \host -> do
@@ -170,43 +172,37 @@ runUpdate UpdateOpts { .. } = do
                         return $ flip map (HashMap.keys hostParts) $ \domain ->
                           (unpack host, domainName' $ unpack domain, combineSubdomains domain hostParts)
 
-  when False $ forM_ certReqDomains print
-
   globalCertificateDir <- getHomeDirectory <&> (</> ".acme/test")
   createDirectoryIfMissing True globalCertificateDir
 
   Just keys <- getOrCreateKeys $ globalCertificateDir </> "rsa.key"
 
-  let certSpecs = flip map certReqDomains $ \(host, domain, domains) -> fmap ((,) host) $
+  let mbCertSpecs :: [(String, DomainName, Maybe CertSpec)]
+      mbCertSpecs = flip map certReqDomains $ \(host, domain, domains) -> (,,) host domain $
                     dereference (map (chooseProvisioner host) domains) <&> certSpec globalCertificateDir keys host domain
 
-  when False $ do
-    mapM_ print certSpecs
+  validCertSpecs <- forM mbCertSpecs $ \(host, domain, mbSpec) ->
+                      maybe (error $ "Invalid configuration.  Host = " ++ host ++ ", domain = " ++ show domain)
+                            (return . (,,) host domain)
+                            mbSpec
 
-    h <- remoteTemp "localhost" "/tmp/whatevs 'bro'" "this content\ncontains stuff'"
-    threadDelay $ 1000 * 1000 * 10
-    removeTemp h
+  let wantedCertSpecs = filter (wantUpdate . view _1) validCertSpecs & map (view _3)
 
-  issuerCert <- readX509 letsEncryptX1CrossSigned
-
-  let wantUpdate h = null updateHosts || isJust (find (== h) updateHosts)
-
-  forM_ certReqDomains $ \(host, domain, domains) -> when (wantUpdate host) $ do
-    putStrLn host
-    let Just spec = dereference (map (chooseProvisioner host) domains) <&> certSpec globalCertificateDir keys host domain
-    print spec
-
-    when True $
+  when True $
+    forM_ wantedCertSpecs $ \spec ->
       forM_ (csDomains spec) $ uncurry canProvision >=>
         (`unless` error "Error: cannot provision files to web server")
+
+  forM_ wantedCertSpecs $ \spec -> do
 
     let terms              = defaultTerms
         directoryUrl       = stagingDirectoryUrl
         email              = emailAddress $ encodeUtf8 . pack $ "root@" ++ (domainToString . fst . head) (csDomains spec)
     print =<< fetchCertificate directoryUrl terms email issuerCert spec
 
-  error "Error: unimplemented"
+
   where
+    wantUpdate h = null updateHosts || isJust (find (== h) updateHosts)
 
     dereference :: [(DomainName, Either DomainName HttpProvisioner)] -> Maybe [(DomainName, HttpProvisioner)]
     dereference xs = plumb $ xs <&> fmap (either deref Just)
