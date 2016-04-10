@@ -169,26 +169,33 @@ runUpdate UpdateOpts { .. } = do
                                                                               "domains") <&> extractObject
                         forM (HashMap.keys hostParts) $ \domain ->
                           return (unpack host, combineSubdomains domain hostParts)
-  forM_ certReqDomains print
+
+  when False $ forM_ certReqDomains print
 
   globalCertificateDir <- getHomeDirectory <&> (</> ".acme/test")
   createDirectoryIfMissing True globalCertificateDir
 
   Just keys <- getOrCreateKeys $ globalCertificateDir </> "rsa.key"
 
-  let certSpecs = flip map certReqDomains $ \(host, domains) -> case dereference $ map (chooseProvisioner host) domains of
-        Just provisioners -> certSpec globalCertificateDir keys (host, provisioners)
-        Nothing           -> error "invalid configuration file"
+  let certSpecs = flip map certReqDomains $ \(host, domains) -> fmap ((,) host) $
+                    dereference (map (chooseProvisioner host) domains) <&> certSpec globalCertificateDir keys host
 
-  mapM_ print certSpecs
+  when False $ do
+    mapM_ print certSpecs
 
-  h <- remoteTemp "localhost" "/tmp/whatevs 'bro'" "this content\ncontains stuff'"
-  threadDelay $ 1000 * 1000 * 10
-  removeTemp h
+    h <- remoteTemp "localhost" "/tmp/whatevs 'bro'" "this content\ncontains stuff'"
+    threadDelay $ 1000 * 1000 * 10
+    removeTemp h
 
-  error "Error: unimplemented"
+  forM_ certReqDomains $ \(host, domains) -> do
+    when (host == "fifty") $ do
+      putStrLn host
+      let cs = dereference (map (chooseProvisioner host) domains) <&> certSpec globalCertificateDir keys host
+      print cs
+      error "Error: unimplemented"
 
   where
+
     dereference :: [(DomainName, Either DomainName HttpProvisioner)] -> Maybe [(DomainName, HttpProvisioner)]
     dereference xs = plumb $ xs <&> fmap (either deref Just)
       where
@@ -200,8 +207,8 @@ runUpdate UpdateOpts { .. } = do
     chooseProvisioner host (VHostSpec domain pathInfo) =
       (domain, provisionViaRemoteFile host <$> pathInfo)
 
-    certSpec :: FilePath -> Keys -> (String, [(DomainName, HttpProvisioner)]) -> CertSpec
-    certSpec baseDir keys (host, requestDomains) = CertSpec { .. }
+    certSpec :: FilePath -> Keys -> String -> [(DomainName, HttpProvisioner)] -> CertSpec
+    certSpec baseDir keys host requestDomains = CertSpec { .. }
       where
         csDomains = requestDomains
         csSkipDH = True -- TODO: implement
@@ -325,7 +332,7 @@ getOrCreateDH :: FilePath -> IO DHP
 getOrCreateDH = getOrCreate (genDHParams' >>= writeDHParams) readDHParams
 
 domainName' :: String -> DomainName
-domainName' dom = fromMaybe (error $ "Error: invalid domain name: " ++ show dom) (domainName $ fromString dom)
+domainName' dom = fromMaybe (error $ "Error: invalid domain name: " ++ dom) (domainName $ fromString dom)
 
 genDHParams' :: IO DHP
 genDHParams' = do
