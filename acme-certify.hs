@@ -176,26 +176,29 @@ runUpdate UpdateOpts { .. } = do
 
   Just keys <- getOrCreateKeys $ globalCertificateDir </> "rsa.key"
 
-
-  certSpecs :: [CertSpec] <- forM certReqDomains $ \(host, domains) -> do
-                               provisioners <- mapM (chooseProvisioner host) domains
-                               return $ certSpec globalCertificateDir keys (host, provisioners)
+  let certSpecs = flip map certReqDomains $ \(host, domains) -> case dereference $ map (chooseProvisioner host) domains of
+        Just provisioners -> certSpec globalCertificateDir keys (host, provisioners)
+        Nothing           -> error "invalid configuration file"
 
   mapM_ print certSpecs
 
   h <- remoteTemp "localhost" "/tmp/whatevs 'bro'" "this content\ncontains stuff'"
-  threadDelay $ 1000*1000*10
+  threadDelay $ 1000 * 1000 * 10
   removeTemp h
 
   error "Error: unimplemented"
 
   where
-    chooseProvisioner :: String -> String -> IO (DomainName, HttpProvisioner)
-    chooseProvisioner host domain      -- TODO: implement
-     = do
-      let errmsg = "whatever"
-      dir <- ensureWritableDir "/var/www/html/.well-known/acme-challenge/" errmsg
-      return (domainName' domain, provisionViaFile dir)
+    dereference :: [(DomainName, Either DomainName HttpProvisioner)] -> Maybe [(DomainName, HttpProvisioner)]
+    dereference xs = plumb $ xs <&> fmap (either deref Just)
+      where
+        deref :: DomainName -> Maybe HttpProvisioner
+        deref s = lookup s xs & preview (_Just . _Right)
+        plumb = traverse (\(a, b) -> fmap ((,) a) b)
+
+    chooseProvisioner :: String -> VHostSpec -> (DomainName, Either DomainName HttpProvisioner)
+    chooseProvisioner host (VHostSpec domain pathInfo) =
+      (domain, provisionViaRemoteFile host <$> pathInfo)
 
     certSpec :: FilePath -> Keys -> (String, [(DomainName, HttpProvisioner)]) -> CertSpec
     certSpec baseDir keys (host, requestDomains) = CertSpec { .. }
@@ -205,10 +208,28 @@ runUpdate UpdateOpts { .. } = do
         csUserKeys = keys
         csCertificateDir = baseDir </> host </> (show . fst) (head requestDomains)
 
-    combineSubdomains :: AsPrimitive v => Text -> HashMap.HashMap Text v -> [String]
+    combineSubdomains :: AsPrimitive v => Text -> HashMap.HashMap Text v -> [VHostSpec]
     combineSubdomains domain subs =
-      map (<..> unpack domain) $ sort -- relying on the fact that '.' sorts first
-       $ concat $ HashMap.lookup domain subs & toListOf (_Just . _String . to (words . unpack))
+      map (makeVHostSpec (domainName' $ unpack domain)) $
+        sort -- relying on the fact that '.' sorts first
+         $ concat $ HashMap.lookup domain subs & toListOf (_Just . _String . to (words . unpack))
+
+data VHostSpec = VHostSpec DomainName (Either DomainName FilePath) deriving Show
+makeVHostSpec :: DomainName -> String -> VHostSpec
+makeVHostSpec = make
+  where
+    make (show -> parentDomain) (splitSpec -> (sub, spec)) =
+      VHostSpec (domainName' $ sub <..> parentDomain) (makeRef spec)
+      where
+        makeRef :: Either String FilePath -> Either DomainName FilePath
+        makeRef = left (\refSub -> domainName' $ refSub <..> parentDomain)
+
+    splitSpec :: String -> (String, Either String FilePath)
+    splitSpec (break (== '{') -> (a, b)) = (,) a $
+      case b of
+        ('{':c@('/':_)) -> Right $ takeWhile (/= '}') c
+        ('{':c)         -> Left  $ takeWhile (/= '}') c
+        _               -> Right $ "/srv" </> a </> "public_html"
 
 data TempRemover = TempRemover { removeTemp :: IO () }
 remoteTemp :: String -> FilePath -> String -> IO TempRemover
@@ -226,7 +247,8 @@ provisionViaRemoteFile :: String -> FilePath -> HttpProvisioner
 provisionViaRemoteFile = provision
   where
     provision host dir (bsToS -> tok) (bsToS -> thumbtoken) =
-      void $ allocate (liftIO $ remoteTemp host (dir </> tok) thumbtoken) removeTemp
+      void $ allocate (liftIO $ remoteTemp host (dir </> wk </> tok) thumbtoken) removeTemp
+    wk = ".well-known/acme-challenge"
     bsToS = unpack . decodeUtf8
 
 runCertify :: CertifyOpts -> IO (Either String ())
@@ -257,10 +279,10 @@ runCertify CertifyOpts{..} = do
     forM_ csDomains $ uncurry canProvision >=>
       (`unless` error "Error: cannot provision files to web server")
 
-  go' directoryUrl terms email issuerCert req
+  fetchCertificate directoryUrl terms email issuerCert req
 
-go' :: URI -> URI -> Maybe EmailAddress -> X509 -> CertSpec -> IO (Either String ())
-go' directoryUrl terms email issuerCert cs@CertSpec{..} = do
+fetchCertificate :: URI -> URI -> Maybe EmailAddress -> X509 -> CertSpec -> IO (Either String ())
+fetchCertificate directoryUrl terms email issuerCert cs@CertSpec{..} = do
   Just domainKeys <- getOrCreateKeys $ csCertificateDir </> "rsa.key"
   dh <- saveDhParams cs
 
