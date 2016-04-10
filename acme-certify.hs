@@ -206,7 +206,7 @@ runUpdate UpdateOpts { .. } = do
         csDomains = requestDomains
         csSkipDH = True -- TODO: implement
         csUserKeys = keys
-        csCertificateDir = baseDir </> host </> (show . fst) (head requestDomains)
+        csCertificateDir = baseDir </> host </> (domainToString . fst) (head requestDomains)
 
     combineSubdomains :: AsPrimitive v => Text -> HashMap.HashMap Text v -> [VHostSpec]
     combineSubdomains domain subs =
@@ -214,11 +214,14 @@ runUpdate UpdateOpts { .. } = do
         sort -- relying on the fact that '.' sorts first
          $ concat $ HashMap.lookup domain subs & toListOf (_Just . _String . to (words . unpack))
 
+domainToString :: DomainName -> String
+domainToString = unpack . decodeUtf8 . Text.Domain.Validate.toByteString
+
 data VHostSpec = VHostSpec DomainName (Either DomainName FilePath) deriving Show
 makeVHostSpec :: DomainName -> String -> VHostSpec
 makeVHostSpec = make
   where
-    make (show -> parentDomain) (splitSpec -> (sub, spec)) =
+    make (domainToString -> parentDomain) (splitSpec -> (sub, spec)) =
       VHostSpec (domainName' $ sub <..> parentDomain) (makeRef spec)
       where
         makeRef :: Either String FilePath -> Either DomainName FilePath
