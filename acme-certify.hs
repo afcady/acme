@@ -206,14 +206,16 @@ needToFetch cs@CertSpec{..} = runExceptT $ do
   exists <- liftIO $ doesFileExist certFile
   unless exists $ throwError NoExistingCert
 
+  -- TODO: parse with cryptonite
   cert <- liftIO $ readFile certFile >>= readX509
   expiration <- liftIO $ getNotAfter cert
   now <- liftIO getCurrentTime
 
-  -- TODO: check X509v3 subjectAltName list within certificate
-  objList <- liftIO $ readSignedObject certFile
-  sc <- maybe (throwError InvalidExistingCert) return $ preview (folded . _Right) objList
-  liftIO $ print $ certAltNames sc
+  signedCert <- (liftIO (readSignedObject certFile) >>=) $
+                maybe (throwError InvalidExistingCert) return . preview (folded . _Right)
+  let wantedDomains = domainToString . fst <$> csDomains
+      haveDomains = certAltNames signedCert
+  unless (null $ wantedDomains \\ haveDomains) $ throwError SubDomainsAdded
 
   if | expiration < now                      -> throwError Expired
      | expiration < addUTCTime graceTime now -> throwError NearExpiration
