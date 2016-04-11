@@ -30,7 +30,8 @@ executable acme
                        text, HsOpenSSL, optparse-applicative, time,
                        email-validate, network-uri, directory, yaml-config,
                        yaml, unordered-containers, lens, lens-aeson, process,
-                       posix-escape, transformers, resourcet, mtl
+                       posix-escape, transformers, resourcet, mtl, x509, pem,
+                       asn1-types
   default-language:    Haskell2010
 
 -- test-suite acme-certify-test

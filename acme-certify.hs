@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE MultiWayIf           #-}
@@ -18,8 +19,6 @@ module Main where
 
 import           BasePrelude
 import           Control.Lens                 hiding (argument, (&))
-import           Control.Monad.IO.Class
-import           Control.Monad.Trans.Except
 import           Control.Monad.Except
 import           Control.Monad.Trans.Resource
 import           Data.Aeson.Lens
@@ -50,6 +49,11 @@ import           System.Posix.Escape
 import           System.Process
 import           Text.Domain.Validate         hiding (validate)
 import           Text.Email.Validate
+
+import qualified Data.ASN1.Types              (ASN1Object)
+import qualified Data.ByteString              as B
+import           Data.PEM                     (pemContent, pemParseBS)
+import qualified Data.X509                    as X509
 
 stagingDirectoryUrl, liveDirectoryUrl, defaultTerms :: URI
 Just liveDirectoryUrl    = parseAbsoluteURI "https://acme-v01.api.letsencrypt.org/directory"
@@ -187,9 +191,18 @@ data CertSpec = CertSpec {
       csUserKeys       :: Keys
 } deriving Show
 
-data NeedCertReason = Expired | NearExpiration | SubDomainsAdded | NoExistingCert deriving Show
-fetchNeeded :: CertSpec -> IO (Either NeedCertReason ())
-fetchNeeded (domainCertFile -> certFile) = runExceptT $ do
+certAltNames :: X509.SignedExact X509.Certificate -> [String]
+certAltNames sc = toListOf (_Just . _Right . to strip1 . folded) altNames & mapMaybe strip2
+  where
+    altNames :: Maybe (Either String X509.ExtSubjectAltName)
+    altNames = X509.extensionGetE $ X509.certExtensions $ X509.signedObject $ X509.getSigned sc
+    strip1 (X509.ExtSubjectAltName x) = x
+    strip2 (X509.AltNameDNS x) = Just x
+    strip2 _ = Nothing
+
+data NeedCertReason = Expired | NearExpiration | SubDomainsAdded | NoExistingCert | InvalidExistingCert deriving Show
+needToFetch :: CertSpec -> IO (Either NeedCertReason ())
+needToFetch cs@CertSpec{..} = runExceptT $ do
   exists <- liftIO $ doesFileExist certFile
   unless exists $ throwError NoExistingCert
 
@@ -198,7 +211,9 @@ fetchNeeded (domainCertFile -> certFile) = runExceptT $ do
   now <- liftIO getCurrentTime
 
   -- TODO: check X509v3 subjectAltName list within certificate
-  -- Need to patch HsOpenSSL.  Or use cryptonite.
+  objList <- liftIO $ readSignedObject certFile
+  sc <- maybe (throwError InvalidExistingCert) return $ preview (folded . _Right) objList
+  liftIO $ print $ certAltNames sc
 
   if | expiration < now                      -> throwError Expired
      | expiration < addUTCTime graceTime now -> throwError NearExpiration
@@ -206,6 +221,13 @@ fetchNeeded (domainCertFile -> certFile) = runExceptT $ do
   where
     graceTime = days 20
     days = (*) (24 * 60 * 60)
+    certFile = domainCertFile cs
+
+readSignedObject :: (Eq a, Show a, Data.ASN1.Types.ASN1Object a) => FilePath -> IO [Either String (X509.SignedExact a)]
+readSignedObject =
+  B.readFile >=> return .
+                 either error (map (X509.decodeSignedObject . pemContent)) . pemParseBS
+
 
 runUpdate :: UpdateOpts -> IO ()
 runUpdate UpdateOpts { .. } = do
@@ -247,7 +269,7 @@ runUpdate UpdateOpts { .. } = do
         directoryUrl       = if updateStaging then stagingDirectoryUrl else liveDirectoryUrl
         email              = emailAddress $ encodeUtf8 . pack $ "root@" ++ (domainToString . fst . head) (csDomains spec)
 
-    (fetchNeeded spec >>=) $ leftMapM_ $ \reason -> do
+    (needToFetch spec >>=) $ leftMapM_ $ \reason -> do
       putStrLn $ concat ["New certificate needed (for domain ", domainToString domain, "): ", show reason]
       if updateDryRun
       then putStrLn "Dry run: nothing fetched, nothing saved."
