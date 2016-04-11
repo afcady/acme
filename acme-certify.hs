@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE MultiWayIf           #-}
 {-# LANGUAGE NamedFieldPuns       #-}
 {-# LANGUAGE NoImplicitPrelude    #-}
 {-# LANGUAGE OverloadedStrings    #-}
@@ -16,13 +17,16 @@
 module Main where
 
 import           BasePrelude
-import           Control.Lens                 hiding ((&), argument)
+import           Control.Lens                 hiding (argument, (&))
 import           Control.Monad.IO.Class
+import           Control.Monad.Trans.Except
+import           Control.Monad.Except
 import           Control.Monad.Trans.Resource
 import           Data.Aeson.Lens
 import qualified Data.HashMap.Strict          as HashMap
-import           Data.Text                    (Text, unpack, pack)
+import           Data.Text                    (Text, pack, unpack)
 import           Data.Text.Encoding           (decodeUtf8, encodeUtf8)
+import           Data.Time.Clock
 import           Data.Yaml                    (Object)
 import qualified Data.Yaml.Config             as Config
 import           Data.Yaml.Config.Internal    (Config (..))
@@ -37,7 +41,7 @@ import           OpenSSL
 import           OpenSSL.DH
 import           OpenSSL.PEM
 import           OpenSSL.RSA
-import           OpenSSL.X509                 (X509)
+import           OpenSSL.X509                 (X509, getNotAfter)
 import           Options.Applicative          hiding (header)
 import qualified Options.Applicative          as Opt
 import           System.Directory
@@ -89,12 +93,12 @@ data CertifyOpts = CertifyOpts {
 }
 
 data UpdateOpts = UpdateOpts {
-      updateConfigFile :: Maybe FilePath,
-      updateHosts :: [String],
-      updateStaging :: Bool,
-      updateDryRun :: Bool,
+      updateConfigFile       :: Maybe FilePath,
+      updateHosts            :: [String],
+      updateStaging          :: Bool,
+      updateDryRun           :: Bool,
       updateDoPrivisionCheck :: Bool,
-      updateTryVHosts :: [String]
+      updateTryVHosts        :: [String]
 }
 
 updateOpts :: Parser Command
@@ -183,6 +187,26 @@ data CertSpec = CertSpec {
       csUserKeys       :: Keys
 } deriving Show
 
+data NeedCertReason = Expired | NearExpiration | SubDomainsAdded | NoExistingCert deriving Show
+fetchNeeded :: CertSpec -> IO (Either NeedCertReason ())
+fetchNeeded (domainCertFile -> certFile) = runExceptT $ do
+  exists <- liftIO $ doesFileExist certFile
+  unless exists $ throwError NoExistingCert
+
+  cert <- liftIO $ readFile certFile >>= readX509
+  expiration <- liftIO $ getNotAfter cert
+  now <- liftIO getCurrentTime
+
+  -- TODO: check X509v3 subjectAltName list within certificate
+  -- Need to patch HsOpenSSL.  Or use cryptonite.
+
+  if | expiration < now                      -> throwError Expired
+     | expiration < addUTCTime graceTime now -> throwError NearExpiration
+     | otherwise                             -> return ()
+  where
+    graceTime = days 20
+    days = (*) (24 * 60 * 60)
+
 runUpdate :: UpdateOpts -> IO ()
 runUpdate UpdateOpts { .. } = do
   issuerCert <- readX509 letsEncryptX1CrossSigned
@@ -194,7 +218,7 @@ runUpdate UpdateOpts { .. } = do
                         return $ flip map (HashMap.keys hostParts) $ \domain ->
                           (unpack host, domainName' $ unpack domain, combineSubdomains domain hostParts)
 
-  globalCertificateDir <- getHomeDirectory <&> (</> if updateStaging then ".acme/test-certs" else ".acme/certs")
+  globalCertificateDir <- getHomeDirectory <&> (</> if updateStaging then ".acme/fake-certs" else ".acme/certs")
   createDirectoryIfMissing True globalCertificateDir
 
   Just keys <- getOrCreateKeys $ globalCertificateDir </> "rsa.key"
@@ -217,15 +241,17 @@ runUpdate UpdateOpts { .. } = do
         can <- uncurry canProvision csd
         unless can $ error "Error: cannot provision files to web server"
 
-  when (null updateTryVHosts) $ forM_ (view _3 <$> wantedCertSpecs) $ \spec -> do
+  when (null updateTryVHosts) $ forM_ wantedCertSpecs $ \(_, domain, spec) -> do
 
     let terms              = defaultTerms
         directoryUrl       = if updateStaging then stagingDirectoryUrl else liveDirectoryUrl
         email              = emailAddress $ encodeUtf8 . pack $ "root@" ++ (domainToString . fst . head) (csDomains spec)
 
-    if updateDryRun
-    then putStrLn $ "Dry run; would have fetched certificate: " ++ show spec
-    else print =<< fetchCertificate directoryUrl terms email issuerCert spec
+    (fetchNeeded spec >>=) $ leftMapM_ $ \reason -> do
+      putStrLn $ concat ["New certificate needed (for domain ", domainToString domain, "): ", show reason]
+      if updateDryRun
+      then putStrLn "Dry run: nothing fetched, nothing saved."
+      else print =<< fetchCertificate directoryUrl terms email issuerCert spec
 
   where
     extractObject :: Config -> Object
@@ -349,18 +375,24 @@ fetchCertificate directoryUrl terms email issuerCert cs@CertSpec{..} = do
   for certificate $ saveCertificate issuerCert dh domainKeys cs
 
 saveDhParams :: CertSpec -> IO (Maybe DHP)
-saveDhParams CertSpec{csSkipDH, csCertificateDir} = do
-  let domainDhFile = csCertificateDir </> "dhparams.pem"
-  if csSkipDH then return Nothing else Just <$> getOrCreateDH domainDhFile
+saveDhParams cs@CertSpec{csSkipDH} =
+  if csSkipDH then return Nothing else Just <$> getOrCreateDH (domainDhFile cs)
 
 saveCertificate :: X509 -> Maybe DHP -> Keys -> CertSpec -> X509 -> IO ()
-saveCertificate issuerCert dh domainKeys CertSpec{csCertificateDir} = saveBoth
+saveCertificate issuerCert dh domainKeys cs = saveBoth
   where
     saveBoth x509      = savePEM x509 >> saveCombined x509
-    saveCombined       = combinedCert issuerCert dh domainKeys >=> writeFile domainCombinedFile
-    savePEM            = writeX509                             >=> writeFile domainCertFile
-    domainCombinedFile = csCertificateDir </> "cert.combined.pem"
-    domainCertFile     = csCertificateDir </> "cert.pem"
+    saveCombined       = combinedCert issuerCert dh domainKeys >=> writeFile (domainCombinedFile cs)
+    savePEM            = writeX509                             >=> writeFile (domainCertFile cs)
+
+domainDhFile :: CertSpec -> FilePath
+domainDhFile CertSpec{..} = csCertificateDir </> "dhparams.pem"
+
+domainCombinedFile :: CertSpec -> FilePath
+domainCombinedFile CertSpec{..} = csCertificateDir </> "cert.combined.pem"
+
+domainCertFile :: CertSpec -> FilePath
+domainCertFile CertSpec{..} = csCertificateDir </> "cert.pem"
 
 genKey :: IO String
 genKey = withOpenSSL $ do
@@ -407,3 +439,6 @@ infixl 0 `otherwiseM`
 (<..>) :: String -> String -> String
 "." <..> dom = dom
 sub <..> dom = sub ++ "." ++ dom
+
+leftMapM_ :: Monad m => (a -> m ()) -> Either a b -> m ()
+leftMapM_ f = mapM_ f . either Right Left
