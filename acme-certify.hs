@@ -93,20 +93,9 @@ data UpdateOpts = UpdateOpts {
       updateHosts :: [String],
       updateStaging :: Bool,
       updateDryRun :: Bool,
-      updateDoPrivisionCheck :: Bool
+      updateDoPrivisionCheck :: Bool,
+      updateTryVHosts :: [String]
 }
-
-instance Show HttpProvisioner where
-    show _ = "<code>"
-instance Show Keys where
-    show _ = "<keys>"
-
-data CertSpec = CertSpec {
-      csDomains        :: [(DomainName, HttpProvisioner)],
-      csSkipDH         :: Bool,
-      csCertificateDir :: FilePath,
-      csUserKeys       :: Keys
-} deriving Show
 
 updateOpts :: Parser Command
 updateOpts = fmap Update $
@@ -124,6 +113,16 @@ updateOpts = fmap Update $
                                            , "configuration file and http provisioning"
                                            ]))
              <*> pure True
+             <*> many
+                   (strOption
+                      (long "try" <>
+                       metavar "DOMAIN" <>
+                       help
+                         (unwords
+                            [ "When specified, only specified domains will be checked"
+                            , "for the ability to provision HTTP files; when not"
+                            , "specified, all domains will be checked"
+                            ])))
 
 -- TODO: global options
 stagingSwitch :: Parser Bool
@@ -172,6 +171,18 @@ certifyOpts = fmap Certify $
                                                          , "making ACME requests"
                                                          ]))
 
+instance Show HttpProvisioner where
+    show _ = "<code>"
+instance Show Keys where
+    show _ = "<keys>"
+
+data CertSpec = CertSpec {
+      csDomains        :: [(DomainName, HttpProvisioner)],
+      csSkipDH         :: Bool,
+      csCertificateDir :: FilePath,
+      csUserKeys       :: Keys
+} deriving Show
+
 runUpdate :: UpdateOpts -> IO ()
 runUpdate UpdateOpts { .. } = do
   issuerCert <- readX509 letsEncryptX1CrossSigned
@@ -197,15 +208,16 @@ runUpdate UpdateOpts { .. } = do
                             (return . (,,) host domain)
                             mbSpec
 
-  let wantedCertSpecs = filter (wantUpdate . view _1) validCertSpecs & map (view _3)
+  let wantedCertSpecs = filter (wantUpdate . view _1) validCertSpecs
 
   when updateDoPrivisionCheck $
-    forM_ wantedCertSpecs $ \spec ->
-      forM_ (csDomains spec) $ uncurry canProvision >=>
-        (`unless` error "Error: cannot provision files to web server")
+    forM_ (view _3 <$> wantedCertSpecs) $ \spec ->
+      forM_ (filter (wantProvisionCheck . fst) $ csDomains spec) $ \csd -> do
+        putStrLn $ "Provision check: " ++ (domainToString . fst $ csd)
+        can <- uncurry canProvision csd
+        unless can $ error "Error: cannot provision files to web server"
 
-
-  forM_ wantedCertSpecs $ \spec -> do
+  when (null updateTryVHosts) $ forM_ (view _3 <$> wantedCertSpecs) $ \spec -> do
 
     let terms              = defaultTerms
         directoryUrl       = if updateStaging then stagingDirectoryUrl else liveDirectoryUrl
@@ -219,8 +231,14 @@ runUpdate UpdateOpts { .. } = do
     extractObject :: Config -> Object
     extractObject (Config _ o) = o
 
+    elemOrNull :: Eq a => [a] -> a -> Bool
+    elemOrNull xs x = null xs || x `elem` xs
+
+    wantProvisionCheck :: DomainName -> Bool
+    wantProvisionCheck = elemOrNull updateTryVHosts . domainToString
+
     wantUpdate :: String -> Bool
-    wantUpdate h = null updateHosts || isJust (find (== h) updateHosts)
+    wantUpdate = elemOrNull updateHosts
 
     dereference :: [(DomainName, Either DomainName HttpProvisioner)] -> Maybe [(DomainName, HttpProvisioner)]
     dereference xs = plumb $ xs <&> fmap (either deref Just)
