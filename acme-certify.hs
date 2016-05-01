@@ -55,6 +55,9 @@ import qualified Data.ByteString              as B
 import           Data.PEM                     (pemContent, pemParseBS)
 import qualified Data.X509                    as X509
 
+defaultUpdateConfigFile :: FilePath
+defaultUpdateConfigFile = "config.yaml"
+
 stagingDirectoryUrl, liveDirectoryUrl, defaultTerms :: URI
 Just liveDirectoryUrl    = parseAbsoluteURI "https://acme-v01.api.letsencrypt.org/directory"
 Just stagingDirectoryUrl = parseAbsoluteURI "https://acme-staging.api.letsencrypt.org/directory"
@@ -235,7 +238,7 @@ runUpdate :: UpdateOpts -> IO ()
 runUpdate UpdateOpts { .. } = do
   issuerCert <- readX509 letsEncryptX3CrossSigned
 
-  config <- Config.load "config.yaml"
+  config <- Config.load $ fromMaybe defaultUpdateConfigFile updateConfigFile
   hostsConfig <- Config.subconfig "hosts" config
   certReqDomains <- fmap concat $ forM (Config.keys hostsConfig) $ \host -> do
                         hostParts <- (Config.subconfig host hostsConfig >>= Config.subconfig "domains") <&> extractObject
