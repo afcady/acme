@@ -409,8 +409,19 @@ saveCertificate :: X509 -> Maybe DHP -> Keys -> CertSpec -> X509 -> IO ()
 saveCertificate issuerCert dh domainKeys cs = saveBoth
   where
     saveBoth x509      = savePEM x509 >> saveCombined x509
-    saveCombined       = combinedCert issuerCert dh domainKeys >=> writeFile (domainCombinedFile cs)
-    savePEM            = writeX509                             >=> writeFile (domainCertFile cs)
+    saveCombined       = combinedCert issuerCert dh domainKeys >=> writePrivateFile (domainCombinedFile cs)
+    savePEM            = writeX509                             >=> writePrivateFile (domainCertFile cs)
+
+writePrivateFile :: FilePath -> String -> IO ()
+writePrivateFile fn content = do
+  touchFile fn
+  setPermissions fn privatePerms
+  writeFile fn content
+  where
+    privatePerms = emptyPermissions & setOwnerReadable True & setOwnerWritable True
+
+touchFile :: FilePath -> IO ()
+touchFile fn = writeFile fn ""
 
 domainDhFile :: CertSpec -> FilePath
 domainDhFile CertSpec{..} = csCertificateDir </> "dhparams.pem"
