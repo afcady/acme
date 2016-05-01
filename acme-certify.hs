@@ -34,7 +34,7 @@ import           Network.ACME                 (HttpProvisioner, Keys (..),
                                                ensureWritableDir,
                                                provisionViaFile, readKeys,
                                                (</>))
-import           Network.ACME.Issuer          (letsEncryptX1CrossSigned)
+import           Network.ACME.Issuer          (letsEncryptX3CrossSigned)
 import           Network.URI
 import           OpenSSL
 import           OpenSSL.DH
@@ -233,7 +233,7 @@ readSignedObject =
 
 runUpdate :: UpdateOpts -> IO ()
 runUpdate UpdateOpts { .. } = do
-  issuerCert <- readX509 letsEncryptX1CrossSigned
+  issuerCert <- readX509 letsEncryptX3CrossSigned
 
   config <- Config.load "config.yaml"
   hostsConfig <- Config.subconfig "hosts" config
@@ -369,7 +369,7 @@ runCertify CertifyOpts{..} = do
       requestDomains     = map domainName' optDomains
       email              = either (error . ("Error: invalid email address: " ++)) id . validate . fromString <$> optEmail
 
-  issuerCert <- readX509 letsEncryptX1CrossSigned
+  issuerCert <- readX509 letsEncryptX3CrossSigned -- TODO: Don't use fixed issuer certificate.  It changed before; it will again.
 
   seq email (return ())
   createDirectoryIfMissing False domainDir
