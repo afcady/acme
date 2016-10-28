@@ -233,17 +233,29 @@ readSignedObject =
   B.readFile >=> return .
                  either error (map (X509.decodeSignedObject . pemContent)) . pemParseBS
 
+configGetCertReqs :: Config -> IO [(String, DomainName, [VHostSpec])]
+configGetCertReqs hostsConfig = do
+  fmap concat $ forM (Config.keys hostsConfig) $ \host ->
+    do
+      hostParts <- (Config.subconfig host hostsConfig >>= Config.subconfig "domains") <&> extractObject
+      return $ flip map (HashMap.keys hostParts) $ \domain ->
+        (unpack host, domainName' $ unpack domain, combineSubdomains domain hostParts)
+
+combineSubdomains :: AsPrimitive v => Text -> HashMap.HashMap Text v -> [VHostSpec]
+combineSubdomains domain subs =
+  map (makeVHostSpec (domainName' $ unpack domain)) $
+    sort -- '.' sorts first
+      $ concat $ HashMap.lookup domain subs & toListOf (_Just . _String . to (words . unpack))
+
+extractObject :: Config -> Object
+extractObject (Config _ o) = o
 
 runUpdate :: UpdateOpts -> IO ()
 runUpdate UpdateOpts { .. } = do
   issuerCert <- readX509 letsEncryptX3CrossSigned
 
   config <- Config.load $ fromMaybe defaultUpdateConfigFile updateConfigFile
-  hostsConfig <- Config.subconfig "hosts" config
-  certReqDomains <- fmap concat $ forM (Config.keys hostsConfig) $ \host -> do
-                        hostParts <- (Config.subconfig host hostsConfig >>= Config.subconfig "domains") <&> extractObject
-                        return $ flip map (HashMap.keys hostParts) $ \domain ->
-                          (unpack host, domainName' $ unpack domain, combineSubdomains domain hostParts)
+  certReqDomains <- configGetCertReqs =<< Config.subconfig "hosts" config
 
   globalCertificateDir <- getHomeDirectory <&> (</> if updateStaging then ".acme/fake-certs" else ".acme/certs")
   createDirectoryIfMissing True globalCertificateDir
@@ -281,8 +293,6 @@ runUpdate UpdateOpts { .. } = do
       else print =<< fetchCertificate directoryUrl terms email issuerCert spec
 
   where
-    extractObject :: Config -> Object
-    extractObject (Config _ o) = o
 
     elemOrNull :: Eq a => [a] -> a -> Bool
     elemOrNull xs x = null xs || x `elem` xs
@@ -311,12 +321,6 @@ runUpdate UpdateOpts { .. } = do
         csSkipDH = True -- TODO: implement
         csUserKeys = keys
         csCertificateDir = baseDir </> host </> domainToString domain
-
-    combineSubdomains :: AsPrimitive v => Text -> HashMap.HashMap Text v -> [VHostSpec]
-    combineSubdomains domain subs =
-      map (makeVHostSpec (domainName' $ unpack domain)) $
-        sort -- '.' sorts first
-         $ concat $ HashMap.lookup domain subs & toListOf (_Just . _String . to (words . unpack))
 
 domainToString :: DomainName -> String
 domainToString = unpack . decodeUtf8 . Text.Domain.Validate.toByteString
