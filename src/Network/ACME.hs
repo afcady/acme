@@ -35,7 +35,7 @@ import           Network.Connection
 import           Network.HTTP.Conduit         (Manager, mkManagerSettings,
                                                newManager)
 import           Network.URI
-import           Network.Wreq                 (Response, checkStatus, defaults,
+import           Network.Wreq                 (Response, checkResponse, defaults,
                                                responseBody, responseHeader,
                                                responseStatus, statusCode,
                                                statusMessage)
@@ -168,8 +168,8 @@ post url payload = do
   put $ r ^?! responseHeader "Replay-Nonce" . to (Nonce . T.unpack . decodeUtf8)
   return r
   where
-    noStatusCheck = defaults & checkStatus .~ Just nullChecker
-    nullChecker _ _ _ = Nothing
+    noStatusCheck = defaults & checkResponse .~ Just nullChecker
+    nullChecker _ _ = return ()
 
 sendPayload :: (MonadIO m, MonadState Nonce m, MonadReader Env m) => (Directory -> String) -> ByteString -> m (Response LC.ByteString)
 sendPayload reqType payload = do

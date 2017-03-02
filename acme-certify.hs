@@ -5,6 +5,7 @@
 {-# LANGUAGE NamedFieldPuns       #-}
 {-# LANGUAGE NoImplicitPrelude    #-}
 {-# LANGUAGE OverloadedStrings    #-}
+{-# LANGUAGE PackageImports       #-}
 {-# LANGUAGE RecordWildCards      #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeSynonymInstances #-}
@@ -27,7 +28,7 @@ import           Data.Text                    (Text, pack, unpack)
 import           Data.Text.Encoding           (decodeUtf8, encodeUtf8)
 import           Data.Time.Clock
 import           Data.Yaml                    (Object)
-import qualified Data.Yaml.Config             as Config
+import qualified "yaml-config" Data.Yaml.Config             as Config
 import           Data.Yaml.Config.Internal    (Config (..))
 import           Network.ACME                 (HttpProvisioner, Keys (..),
                                                canProvision, certify,
