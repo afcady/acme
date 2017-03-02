@@ -64,19 +64,29 @@ Just stagingDirectoryUrl = parseAbsoluteURI "https://acme-staging.api.letsencryp
 Just defaultTerms        = parseAbsoluteURI "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
 
 main :: IO ()
-main = execParser (info opts idm) >>= run
+main = customExecParser (prefs showHelpOnError) (info opts desc) >>= run
   where
     opts :: Parser Options
     opts = Options <$> parseCommand
     parseCommand :: Parser Command
     parseCommand = subparser $
-      command "certify" (info (helper <*> certifyOpts) desc) <>
-      command "update"  (info (helper <*> updateOpts)  desc)
+      command "certify" (info (helper <*> certifyOpts) certifyDesc) <>
+      command "update" (info (helper <*> updateOpts) updateDesc)
+
     desc = fullDesc <> progDesc detailedDescription <> Opt.header "Let's Encrypt! ACME client"
     detailedDescription = unwords
-                            [ "This program will generate a signed TLS certificate"
+                            [ "This program generates signed TLS certificates"
                             , "using the ACME protocol and the free Let's Encrypt! CA."
                             ]
+
+    certifyDesc = progDesc $ unwords
+                               [ "Generate a single signed TLS certificate"
+                               , "for one or more domains."
+                               ]
+    updateDesc = progDesc $ unwords
+                              [ "Generate any number of signed TLS certificates,"
+                              , "each certifying any number of domains."
+                              ]
 run :: Options -> IO ()
 run (Options (Certify opts)) = runCertify opts >>= either (error . ("Error: " ++)) return
 run (Options (Update opts)) = runUpdate opts
