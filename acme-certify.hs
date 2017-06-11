@@ -65,7 +65,7 @@ Just stagingDirectoryUrl = parseAbsoluteURI "https://acme-staging.api.letsencryp
 Just defaultTerms        = parseAbsoluteURI "https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"
 
 main :: IO ()
-main = customExecParser (prefs showHelpOnError) (info opts desc) >>= run
+main = customExecParser (prefs showHelpOnEmpty) (info opts desc) >>= run
   where
     opts :: Parser Options
     opts = Options <$> parseCommand
@@ -125,7 +125,7 @@ updateOpts = fmap Update $
                    (strOption
                       (long "config" <>
                        metavar "FILENAME" <>
-                       help "location of YAML configuration file"))
+                       help "Alternative location of YAML configuration file"))
              <*> many (argument str (metavar "HOSTS"))
              <*> stagingSwitch
              <*> switch
@@ -134,7 +134,9 @@ updateOpts = fmap Update $
                                            [ "Do not fetch any certificates; only tests"
                                            , "configuration file and http provisioning"
                                            ]))
-             <*> pure True
+             <*> switch (long "provision-check" <> help
+                         (unwords ["Locally check HTTP provisioning",
+                                   "before requesting certificates"]))
              <*> many
                    (strOption
                       (long "try" <>
