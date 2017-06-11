@@ -134,9 +134,10 @@ updateOpts = fmap Update $
                                            [ "Do not fetch any certificates; only tests"
                                            , "configuration file and http provisioning"
                                            ]))
-             <*> switch (long "provision-check" <> help
-                         (unwords ["Locally check HTTP provisioning",
-                                   "before requesting certificates"]))
+             <*> fmap not (switch
+                            (long "no-provision-check" <> help
+                            (unwords ["Locally check HTTP provisioning",
+                                      "before requesting certificates"])))
              <*> many
                    (strOption
                       (long "try" <>
@@ -286,13 +287,6 @@ runUpdate UpdateOpts { .. } = do
 
   let wantedCertSpecs = filter (wantUpdate . view _1) validCertSpecs
 
-  when updateDoPrivisionCheck $
-    forM_ (view _3 <$> wantedCertSpecs) $ \spec ->
-      forM_ (filter (wantProvisionCheck . fst) $ csDomains spec) $ \csd -> do
-        putStrLn $ "Provision check: " ++ (domainToString . fst $ csd)
-        can <- uncurry canProvision csd
-        unless can $ error "Error: cannot provision files to web server"
-
   when (null updateTryVHosts) $ forM_ wantedCertSpecs $ \(_, domain, spec) -> do
 
     let terms              = defaultTerms
@@ -301,6 +295,11 @@ runUpdate UpdateOpts { .. } = do
 
     (needToFetch spec >>=) $ leftMapM_ $ \reason -> do
       putStrLn $ concat ["New certificate needed (for domain ", domainToString domain, "): ", show reason]
+      when updateDoPrivisionCheck $
+        forM_ (filter (wantProvisionCheck . fst) $ csDomains spec) $ \csd -> do
+          putStrLn $ "Provision check: " ++ (domainToString . fst $ csd)
+          can <- uncurry canProvision csd
+          unless can $ error "Error: cannot provision files to web server"
       if updateDryRun
       then putStrLn "Dry run: nothing fetched, nothing saved."
       else print =<< fetchCertificate directoryUrl terms email issuerCert spec
