@@ -115,7 +115,7 @@ data UpdateOpts = UpdateOpts {
       updateHosts            :: [String],
       updateStaging          :: Bool,
       updateDryRun           :: Bool,
-      updateDoPrivisionCheck :: Bool,
+      updateDoProvisionCheck :: Bool,
       updateTryVHosts        :: [String]
 }
 
@@ -295,7 +295,7 @@ runUpdate UpdateOpts { .. } = do
 
     (needToFetch spec >>=) $ leftMapM_ $ \reason -> do
       putStrLn $ concat ["New certificate needed (for domain ", domainToString domain, "): ", show reason]
-      when updateDoPrivisionCheck $
+      when updateDoProvisionCheck $
         forM_ (filter (wantProvisionCheck . fst) $ csDomains spec) $ \csd -> do
           putStrLn $ "Provision check: " ++ (domainToString . fst $ csd)
           can <- uncurry canProvision csd
