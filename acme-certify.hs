@@ -1,15 +1,17 @@
+{-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
-{-# LANGUAGE FlexibleContexts     #-}
-{-# LANGUAGE FlexibleInstances    #-}
-{-# LANGUAGE MultiWayIf           #-}
-{-# LANGUAGE NamedFieldPuns       #-}
-{-# LANGUAGE NoImplicitPrelude    #-}
-{-# LANGUAGE OverloadedStrings    #-}
-{-# LANGUAGE PackageImports       #-}
-{-# LANGUAGE RecordWildCards      #-}
-{-# LANGUAGE ScopedTypeVariables  #-}
-{-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE ViewPatterns         #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE MultiWayIf            #-}
+{-# LANGUAGE NamedFieldPuns        #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE PackageImports        #-}
+{-# LANGUAGE RecordWildCards       #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeSynonymInstances  #-}
+{-# LANGUAGE ViewPatterns          #-}
 
 --------------------------------------------------------------------------------
 -- | Get a certificate from Let's Encrypt using the ACME protocol.
@@ -56,6 +58,7 @@ import qualified Data.ByteString              as B
 import           Data.PEM                     (pemContent, pemParseBS)
 import qualified Data.X509                    as X509
 
+
 defaultUpdateConfigFile :: FilePath
 defaultUpdateConfigFile = "config.yaml"
 
@@ -70,29 +73,39 @@ main = customExecParser (prefs showHelpOnEmpty) (info opts desc) >>= run
     opts :: Parser Options
     opts = Options <$> parseCommand
     parseCommand :: Parser Command
-    parseCommand = subparser $
-      command "certify" (info (helper <*> certifyOpts) certifyDesc) <>
-      command "update" (info (helper <*> updateOpts) updateDesc)
+    parseCommand =
+      subparser $
+      command "certify" (info' certifyOpts certifyDesc) <>
+      command "update" (info' updateOpts updateDesc) <>
+      command "remote-check" (info' checkOpts checkDesc)
+    info' o d = info (helper <*> o) (progDesc $ unwords d)
+    desc =
+      fullDesc <> progDesc detailedDescription <>
+      Opt.header "Let's Encrypt! ACME client"
+    detailedDescription =
+      unwords
+        [ "This program generates signed TLS certificates"
+        , "using the ACME protocol and the free Let's Encrypt! CA."
+        ]
+    certifyDesc =
+      ["Generate a single signed TLS certificate", "for one or more domains."]
+    updateDesc =
+      [ "Generate any number of signed TLS certificates,"
+      , "each certifying any number of domains."
+      ]
+    checkDesc = ["Check certificate expiration on remote HTTPS servers"]
 
-    desc = fullDesc <> progDesc detailedDescription <> Opt.header "Let's Encrypt! ACME client"
-    detailedDescription = unwords
-                            [ "This program generates signed TLS certificates"
-                            , "using the ACME protocol and the free Let's Encrypt! CA."
-                            ]
-
-    certifyDesc = progDesc $ unwords
-                               [ "Generate a single signed TLS certificate"
-                               , "for one or more domains."
-                               ]
-    updateDesc = progDesc $ unwords
-                              [ "Generate any number of signed TLS certificates,"
-                              , "each certifying any number of domains."
-                              ]
 run :: Options -> IO ()
 run (Options (Certify opts)) = runCertify opts >>= either (error . ("Error: " ++)) return
 run (Options (Update opts)) = runUpdate opts
+run (Options (Check opts)) = runCheck opts
 
-data Command = Certify CertifyOpts | Update UpdateOpts
+data Command = Certify CertifyOpts | Update UpdateOpts | Check CheckOpts
+
+data CheckOpts = CheckOpts {
+  optDomains    :: [String],
+  optConfigFile :: Maybe FilePath
+}
 
 data Options = Options {
       optCommand :: Command
@@ -118,6 +131,19 @@ data UpdateOpts = UpdateOpts {
       updateDoProvisionCheck :: Bool,
       updateTryVHosts        :: [String]
 }
+
+checkOpts :: Parser Command
+checkOpts =
+  fmap Check $
+  CheckOpts <$>
+  many
+    (argument str $
+     metavar "DOMAINS" <>
+     help "Domains to check (default: from configuration file)") <*>
+  optional
+    (strOption $
+     long "config" <> metavar "FILENAME" <>
+     help "Alternative location of YAML configuration file")
 
 updateOpts :: Parser Command
 updateOpts = fmap Update $
@@ -215,7 +241,7 @@ certAltNames sc = toListOf (_Just . _Right . to strip1 . folded) altNames & mapM
     altNames = X509.extensionGetE $ X509.certExtensions $ X509.signedObject $ X509.getSigned sc
     strip1 (X509.ExtSubjectAltName x) = x
     strip2 (X509.AltNameDNS x) = Just x
-    strip2 _ = Nothing
+    strip2 _                   = Nothing
 
 data NeedCertReason = Expired | NearExpiration | SubDomainsAdded | NoExistingCert | InvalidExistingCert deriving Show
 needToFetch :: CertSpec -> IO (Either NeedCertReason ())
@@ -225,14 +251,20 @@ needToFetch cs@CertSpec{..} = runExceptT $ do
 
   -- TODO: parse with cryptonite
   cert <- liftIO $ readFile certFile >>= readX509
-  expiration <- liftIO $ getNotAfter cert
-  now <- liftIO getCurrentTime
+  checkCertExpiration cert
 
   signedCert <- (liftIO (readSignedObject certFile) >>=) $
                 maybe (throwError InvalidExistingCert) return . preview (folded . _Right)
   let wantedDomains = domainToString . fst <$> csDomains
       haveDomains = certAltNames signedCert
   unless (null $ wantedDomains \\ haveDomains) $ throwError SubDomainsAdded
+  where
+    certFile = domainCertFile cs
+
+checkCertExpiration :: X509 -> ExceptT NeedCertReason IO ()
+checkCertExpiration cert = do
+  now <- liftIO getCurrentTime
+  expiration <- liftIO $ getNotAfter cert
 
   if | expiration < now                      -> throwError Expired
      | expiration < addUTCTime graceTime now -> throwError NearExpiration
@@ -240,7 +272,6 @@ needToFetch cs@CertSpec{..} = runExceptT $ do
   where
     graceTime = days 20
     days = (*) (24 * 60 * 60)
-    certFile = domainCertFile cs
 
 readSignedObject :: (Eq a, Show a, Data.ASN1.Types.ASN1Object a) => FilePath -> IO [Either String (X509.SignedExact a)]
 readSignedObject =
@@ -248,12 +279,18 @@ readSignedObject =
                  either error (map (X509.decodeSignedObject . pemContent)) . pemParseBS
 
 configGetCertReqs :: Config -> IO [(String, DomainName, [VHostSpec])]
-configGetCertReqs hostsConfig = do
-  fmap concat $ forM (Config.keys hostsConfig) $ \host ->
-    do
-      hostParts <- (Config.subconfig host hostsConfig >>= Config.subconfig "domains") <&> extractObject
-      return $ flip map (HashMap.keys hostParts) $ \domain ->
-        (unpack host, domainName' $ unpack domain, combineSubdomains domain hostParts)
+configGetCertReqs hostsConfig = fmap concat $ forHosts hostsConfig $ do
+    \host hostParts -> return $
+      flip map (HashMap.keys hostParts) $ \domain ->
+        ( unpack host
+        , domainName' $ unpack domain
+        , combineSubdomains domain hostParts)
+
+forHosts :: Config -> (Config.Key -> Object -> IO a) -> IO [a]
+forHosts hostsConfig f =
+  forM (Config.keys hostsConfig) $ \host -> do
+    hostParts <- (Config.subconfig host hostsConfig >>= Config.subconfig "domains") <&> extractObject
+    f host hostParts
 
 combineSubdomains :: AsPrimitive v => Text -> HashMap.HashMap Text v -> [VHostSpec]
 combineSubdomains domain subs =
@@ -263,6 +300,51 @@ combineSubdomains domain subs =
 
 extractObject :: Config -> Object
 extractObject (Config _ o) = o
+
+checkRemoteCertExpiry :: DomainName -> IO (Either NeedCertReason ())
+checkRemoteCertExpiry = runExceptT . (getRemoteCert >=> checkCertExpiration)
+  where
+    getRemoteCert :: DomainName -> ExceptT NeedCertReason IO X509
+    getRemoteCert (domainToString -> domain) = do
+      certText <- fetch ""
+      cert <- extract certText
+      liftIO $ readX509 cert
+      where
+        cmd p a = do
+          (e, out, _err) <- liftIO $ readCreateProcessWithExitCode p a
+          when (e /= ExitSuccess) $ throwError NoExistingCert -- TODO
+          return out
+
+        fetch = cmd $ proc "openssl" ["s_client", "-connect", domain ++ ":443", "-servername", domain]
+        extract = cmd $ proc "openssl" ["x509"]
+
+configFileGetCertReqs :: Maybe FilePath -> IO [(String, DomainName, [VHostSpec])]
+configFileGetCertReqs configFile = do
+  config <- Config.load $ fromMaybe defaultUpdateConfigFile configFile
+  Config.subconfig "hosts" config >>= configGetCertReqs
+
+runCheck :: CheckOpts -> IO ()
+runCheck CheckOpts {..} = do
+  domainsToCheck <- if null optDomains
+    then configFileGetCertReqs optConfigFile <&> (extractSubdomains `concatMap`)
+    else return $ domainName' <$> optDomains
+
+  checkedDomains <- map plumb <$> forM domainsToCheck (bothA return checkRemoteCertExpiry)
+  let verified = rights checkedDomains
+  when (not $ null verified) $
+    putStrLn $ ("Verified: " ++) $ unwords $ domainToString <$> verified
+
+  mapM_ print $ lefts checkedDomains
+
+  return ()
+  where
+    extractSubdomains :: (String, DomainName, [VHostSpec]) -> [DomainName]
+    extractSubdomains (_,_,a) = vhsDomain <$> a
+    bothA f g a = (,) <$> f a <*> g a
+
+    plumb :: (a, Either b ()) -> Either (a, b) a
+    plumb (d, Right ()) = Right d
+    plumb (d, Left r) = Left (d, r)
 
 runUpdate :: UpdateOpts -> IO ()
 runUpdate UpdateOpts { .. } = do
@@ -337,7 +419,10 @@ runUpdate UpdateOpts { .. } = do
 domainToString :: DomainName -> String
 domainToString = unpack . decodeUtf8 . Text.Domain.Validate.toByteString
 
-data VHostSpec = VHostSpec DomainName (Either DomainName FilePath) deriving Show
+data VHostSpec = VHostSpec
+  { vhsDomain        :: DomainName
+  , vhsProvisionInfo :: (Either DomainName FilePath)
+  } deriving (Show)
 makeVHostSpec :: DomainName -> String -> VHostSpec
 makeVHostSpec parentDomain vhostSpecStr = VHostSpec (domainName' vhostName) (left domainName' spec)
   where
