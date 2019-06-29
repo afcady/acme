@@ -70,9 +70,9 @@ certify directoryUrl keys reg domainKeys domains = do
 
         cr dom = challengeRequest dom >>= statusReport >>= extractCR >>= performChallenge dom
 
-    runResourceT $ do
+    do
       challengeResultLinks <- forM (map fst domains) cr
-      lift . runExceptT $ do
+      runExceptT $ do
         ExceptT $ pollResults challengeResultLinks <&> left ("certificate receipt was not attempted because a challenge failed: " ++)
         ExceptT $ retrieveCert certReq >>= statusReport <&> checkCertResponse
 
@@ -154,12 +154,12 @@ data Directory = Directory {
 }
 newtype Nonce = Nonce String
 data Env = Env { getDir :: Directory, getKeys :: Keys, getSession :: WS.Session }
-type ACME = RWST Env () Nonce IO
+type ACME = RWST Env () Nonce ResIO
 
 runACME :: URI -> Keys -> ACME a -> IO a
 runACME url keys f = WS.withSession $ \sess -> do
   Just (dir, nonce) <- getDirectory sess (show url)
-  fst <$> evalRWST f (Env dir keys sess) nonce
+  runResourceT $ fst <$> evalRWST f (Env dir keys sess) nonce
 
 post :: (MonadReader Env m, MonadState Nonce m, MonadIO m) => String -> LC.ByteString -> m (Response LC.ByteString)
 post url payload = do
