@@ -157,7 +157,8 @@ data Env = Env { getDir :: Directory, getKeys :: Keys, getSession :: WS.Session 
 type ACME = RWST Env () Nonce ResIO
 
 runACME :: URI -> Keys -> ACME a -> IO a
-runACME url keys f = WS.withSession $ \sess -> do
+runACME url keys f = do
+  sess <- WS.newSession
   Just (dir, nonce) <- getDirectory sess (show url)
   runResourceT $ fst <$> evalRWST f (Env dir keys sess) nonce
 
