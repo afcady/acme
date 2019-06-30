@@ -1,7 +1,5 @@
-{-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts      #-}
-{-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE MultiWayIf            #-}
 {-# LANGUAGE NamedFieldPuns        #-}
 {-# LANGUAGE NoImplicitPrelude     #-}
@@ -9,7 +7,6 @@
 {-# LANGUAGE PackageImports        #-}
 {-# LANGUAGE RecordWildCards       #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
-{-# LANGUAGE TypeSynonymInstances  #-}
 {-# LANGUAGE ViewPatterns          #-}
 
 --------------------------------------------------------------------------------
@@ -221,17 +218,12 @@ certifyOpts = fmap Certify $
                                                          , "making ACME requests"
                                                          ]))
 
-instance Show HttpProvisioner where
-    show _ = "<code>"
-instance Show Keys where
-    show _ = "<keys>"
-
 data CertSpec = CertSpec {
       csDomains        :: [(DomainName, HttpProvisioner)],
       csSkipDH         :: Bool,
       csCertificateDir :: FilePath,
       csUserKeys       :: Keys
-} deriving Show
+}
 
 certAltNames :: X509.SignedExact X509.Certificate -> [String]
 certAltNames sc = toListOf (_Just . _Right . to strip1 . folded) altNames & mapMaybe strip2
