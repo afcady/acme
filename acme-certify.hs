@@ -21,42 +21,42 @@
 module Main where
 
 import           BasePrelude
-import           Control.Lens                 hiding (argument, (&))
+import           Control.Lens                   hiding (argument, (&))
 import           Control.Monad.Except
 import           Control.Monad.Trans.Resource
 import           Data.Aeson.Lens
-import qualified Data.HashMap.Strict          as HashMap
-import           Data.Text                    (Text, pack, unpack)
-import           Data.Text.Encoding           (decodeUtf8, encodeUtf8)
+import qualified Data.HashMap.Strict            as HashMap
+import           Data.Text                      (Text, pack, unpack)
+import           Data.Text.Encoding             (decodeUtf8, encodeUtf8)
 import           Data.Time.Clock
-import           Data.Yaml                    (Object)
-import qualified "yaml-config" Data.Yaml.Config             as Config
-import           Data.Yaml.Config.Internal    (Config (..))
-import           Network.ACME                 (HttpProvisioner, Keys (..),
-                                               canProvision, certify,
-                                               ensureWritableDir,
-                                               provisionViaFile, readKeys,
-                                               (</>))
-import           Network.ACME.Issuer          (letsEncryptX3CrossSigned)
+import           Data.Yaml                      (Object)
+import qualified "yaml-config" Data.Yaml.Config as Config
+import           Data.Yaml.Config.Internal      (Config (..))
+import           Network.ACME                   (HttpProvisioner, Keys (..),
+                                                 canProvision, certify,
+                                                 ensureWritableDir,
+                                                 provisionViaFile, readKeys,
+                                                 (</>))
+import           Network.ACME.Issuer            (letsEncryptX3CrossSigned)
 import           Network.URI
 import           OpenSSL
 import           OpenSSL.DH
 import           OpenSSL.PEM
 import           OpenSSL.RSA
-import           OpenSSL.X509                 (X509, getNotAfter)
-import           Options.Applicative          hiding (header)
-import qualified Options.Applicative          as Opt
+import           OpenSSL.X509                   (X509, getNotAfter)
+import           Options.Applicative            hiding (header)
+import qualified Options.Applicative            as Opt
 import           System.Directory
 import           System.IO
 import           System.Posix.Escape
 import           System.Process
-import           Text.Domain.Validate         hiding (validate)
+import           Text.Domain.Validate           hiding (validate)
 import           Text.Email.Validate
 
-import qualified Data.ASN1.Types              (ASN1Object)
-import qualified Data.ByteString              as B
-import           Data.PEM                     (pemContent, pemParseBS)
-import qualified Data.X509                    as X509
+import qualified Data.ASN1.Types                (ASN1Object)
+import qualified Data.ByteString                as B
+import           Data.PEM                       (pemContent, pemParseBS)
+import qualified Data.X509                      as X509
 
 
 defaultUpdateConfigFile :: FilePath
@@ -344,7 +344,7 @@ runCheck CheckOpts {..} = do
 
     plumb :: (a, Either b ()) -> Either (a, b) a
     plumb (d, Right ()) = Right d
-    plumb (d, Left r) = Left (d, r)
+    plumb (d, Left r)   = Left (d, r)
 
 runUpdate :: UpdateOpts -> IO ()
 runUpdate UpdateOpts { .. } = do
